@@ -14,7 +14,7 @@ st.set_page_config(
 # CONNESSIONE SUPABASE CLOUD
 # ---------------------------------------------------------
 SUPABASE_URL = "https://azmyqrcxfnimwrhpyhsv.supabase.co"
-SUPABASE_KEY = "sb_publishable_DIInoof0G2XKbY1KIQNESQ_7cRj8"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF6bXlxcmN4Zm5pbXdyaHB5aHN2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg1OTAxNjEsImV4cCI6MjEwNDE2NjE2MX0.sFf3_axQg6uOqWCQJcfvWGbebDwrVGngIyA0jPZqjz4"
 
 def init_supabase() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_KEY)
