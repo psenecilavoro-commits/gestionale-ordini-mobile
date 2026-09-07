@@ -202,6 +202,10 @@ if "uploader_key" not in st.session_state:
 if "select_all_state" not in st.session_state:
     st.session_state.select_all_state = False
 
+# Session State per tracciare le coppie ignorate dall'utente
+if "coppie_ignorate" not in st.session_state:
+    st.session_state.coppie_ignorate = set()
+
 tab_database, tab_grafici, tab_norm_cli, tab_fuzzy = st.tabs([
     "📋 Database Ordini", 
     "📈 Analisi & Grafici", 
@@ -509,7 +513,6 @@ with tab_norm_cli:
         if sel_cli_nc != "-- Seleziona un cliente --":
             df_cli_nc = df_nc[df_nc["CLIENTE"] == sel_cli_nc]
             
-            # Conteggio frequenza articoli per questo cliente
             art_counts = df_cli_nc["ARTICOLO"].value_counts().reset_index()
             art_counts.columns = ["ARTICOLO", "N° ORDINI"]
 
@@ -527,7 +530,6 @@ with tab_norm_cli:
                 
                 art_da_cambiare = st.selectbox("❌ Articolo da SOSTITUIRE (obsoleto/errato):", ["-- Seleziona --"] + articoli_cli_list, key="nc_from")
                 
-                # Escludiamo l'articolo selezionato come 'da cambiare' dalla seconda lista
                 articoli_dest_list = [a for a in articoli_cli_list if a != art_da_cambiare]
                 art_destinazione = st.selectbox("✅ Nuovo nome CORRETTO (da applicare):", ["-- Seleziona o scrivi sotto --"] + articoli_dest_list, key="nc_to_sel")
                 
@@ -549,7 +551,7 @@ with tab_norm_cli:
         st.warning("Database vuoto o in fase di caricamento.")
 
 # =========================================================
-# SCHEDA 4: PULIZIA SMART (FUZZY MATCHING)
+# SCHEDA 4: PULIZIA SMART (FUZZY MATCHING) CON IGNORA
 # =========================================================
 with tab_fuzzy:
     st.subheader("🤖 Rilevamento Automatico Duplicati e Varianti")
@@ -566,6 +568,12 @@ with tab_fuzzy:
         if col_f3.button("🔄 Ricarica DB Cloud", key="btn_fz_reload"):
             st.session_state.db_ordini = carica_db_cloud()
             st.rerun()
+
+        # Pulsante per ripristinare le coppie eventualmente nascoste
+        if st.session_state.coppie_ignorate:
+            if st.button(f"👁️ Ripristina {len(st.session_state.coppie_ignorate)} coppie ignorate"):
+                st.session_state.coppie_ignorate.clear()
+                st.rerun()
 
         if target_cli != "Tutti i Clienti":
             df_work = df_fz[df_fz["CLIENTE"] == target_cli]
@@ -588,13 +596,19 @@ with tab_fuzzy:
                 score_cutoff=soglia
             )
             for art_b, score, _ in match:
-                coppie_trovate.append({
-                    "Articolo A": art_a,
-                    "Articolo B": art_b,
-                    "Somiglianza": f"{round(score)}%",
-                    "Conteggio A": len(df_work[df_work["ARTICOLO"] == art_a]),
-                    "Conteggio B": len(df_work[df_work["ARTICOLO"] == art_b])
-                })
+                # Creiamo una chiave unica identificativa per la coppia
+                coppia_key = tuple(sorted([art_a, art_b]))
+                
+                # Se la coppia non è stata contrassegnata come "ignorata", la mostriamo
+                if coppia_key not in st.session_state.coppie_ignorate:
+                    coppie_trovate.append({
+                        "key": coppia_key,
+                        "Articolo A": art_a,
+                        "Articolo B": art_b,
+                        "Somiglianza": f"{round(score)}%",
+                        "Conteggio A": len(df_work[df_work["ARTICOLO"] == art_a]),
+                        "Conteggio B": len(df_work[df_work["ARTICOLO"] == art_b])
+                    })
                 processati.add(art_b)
 
         if coppie_trovate:
@@ -603,7 +617,14 @@ with tab_fuzzy:
 
             for i, c in enumerate(coppie_trovate):
                 with st.container():
-                    st.markdown(f"#### Coppia #{i+1} — Somiglianza: `{c['Somiglianza']}`")
+                    col_head_left, col_head_right = st.columns([4, 1])
+                    col_head_left.markdown(f"#### Coppia #{i+1} — Somiglianza: `{c['Somiglianza']}`")
+                    
+                    # Tasto per ignorare/nascondere la coppia
+                    if col_head_right.button("❌ Ignora coppia", key=f"btn_ignore_{i}"):
+                        st.session_state.coppie_ignorate.add(c['key'])
+                        st.rerun()
+
                     col_left, col_right = st.columns(2)
 
                     with col_left:
@@ -625,6 +646,6 @@ with tab_fuzzy:
                                 st.rerun()
                     st.divider()
         else:
-            st.success("Nessun duplicato trovato con la percentuale di somiglianza impostata. Prova ad abbassare la percentuale dello slider.")
+            st.success("Nessun duplicato trovato con la percentuale di somiglianza impostata.")
     else:
         st.warning("Database vuoto.")
