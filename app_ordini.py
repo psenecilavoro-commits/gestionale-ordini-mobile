@@ -95,7 +95,7 @@ def rinomina_articolo_cloud(vecchio_nome, nuovo_nome, cliente=None):
         return False
 
 # ---------------------------------------------------------
-# FUNZIONE DI ESTRAZIONE A COORDINATE VISIVE (UNIVERSALE)
+# FUNZIONE DI ESTRAZIONE MULTI-LAYOUT (VECCHIO + NUOVO)
 # ---------------------------------------------------------
 def estrai_dati_pdf(pdf_file):
     righe_estratte = []
@@ -106,81 +106,151 @@ def estrai_dati_pdf(pdf_file):
         testo_layout = page.extract_text(layout=True) or ""
         testo_semplice = page.extract_text(layout=False) or ""
 
-    m_cliente = re.search(r"Spett\.le\s*\n\s*([^\n]+)", testo_semplice)
-    cliente = m_cliente.group(1).strip() if m_cliente else ""
+    # =========================================================
+    # CASE 1: NUOVA GRAFICA INNOVA GROUP (BORGO SAN GIACOMO)
+    # =========================================================
+    if "BORGO SAN GIACOMO" in testo_semplice or "N° Ord. Cliente" in testo_semplice:
+        # 1. Cliente
+        m_cli = re.search(r"Spett\.le\s*\n\s*([^\n]+)", testo_semplice)
+        cliente = m_cli.group(1).strip() if m_cli else ""
 
-    n_ordine = ""
-    target_word = None
-    for w in words:
-        if "N°" in w['text'] or "Ord" in w['text'] or "Cliente" in w['text']:
-            if w['top'] < 300:
-                target_word = w
-                break
-    
-    if target_word:
-        x0 = target_word['x0'] - 20
-        x1 = target_word['x1'] + 80
-        top = target_word['bottom']
-        bottom = top + 50
+        # 2. N° Ordine Cliente (es. 269/OF)
+        m_ord = re.search(r"N°\s*Ord\.\s*Cliente\s*[\n\r]*\s*([A-Z0-9/\-_]+)", testo_semplice, re.IGNORECASE)
+        n_ordine = m_ord.group(1).strip() if m_ord else ""
+
+        # 3. Righe Tabella Articoli
+        righe_raw = testo_layout.split("\n")
         
-        num_words = [
-            w['text'].strip() for w in words 
-            if x0 <= w['x0'] <= x1 and top <= w['top'] <= bottom
-        ]
-        
-        for nw in num_words:
-            if re.search(r"\d", nw) and not "Spett" in nw:
-                n_ordine = nw
+        idx_inizio_tabella = 0
+        for i, riga in enumerate(righe_raw):
+            if "Descrizione" in riga and "Quantità" in riga:
+                idx_inizio_tabella = i
                 break
 
-    if not n_ordine:
-        m_ord = re.search(r"N°\s*Ord\.?\s*Cliente\s*[\n\r]*\s*([A-Z0-9/\-_]+)", testo_semplice, re.IGNORECASE)
-        if m_ord:
-            n_ordine = m_ord.group(1).strip()
-
-    righe_raw = testo_layout.split("\n")
-    
-    for i, riga in enumerate(righe_raw):
-        m_consegna = re.search(r"(\d{2}\.\d{2}\.\d{4}|\d{2}/\d{2}/\d{4})", riga)
-        m_prezzo = re.search(r"(?:€\s*)?([\d]+[\.,]\d{2,4})\b", riga)
-        
-        if m_consegna and m_prezzo:
-            consegna = m_consegna.group(1).replace(".", "/")
-            val_prezzo = m_prezzo.group(1).strip()
-            prezzo = f"€ {val_prezzo}"
+        for i in range(idx_inizio_tabella + 1, len(righe_raw)):
+            riga = righe_raw[i]
             
-            idx_date = riga.find(m_consegna.group(1))
-            
-            segmento_qta = riga[idx_date + len(m_consegna.group(1)):].strip()
-            m_qta = re.search(r"(\d{1,3}(?:\.\d{3})+|\d+)", segmento_qta)
-            qta = m_qta.group(1).strip() if m_qta else ""
-
-            articolo = ""
-            testo_prima_data = riga[:idx_date].strip()
-            
-            if len(testo_prima_data) > 3:
+            m_consegna = re.search(r"(\d{2}\.\d{2}\.\d{4})", riga)
+            if m_consegna:
+                consegna = m_consegna.group(1).replace(".", "/")
+                idx_date = riga.find(m_consegna.group(1))
+                
+                testo_prima_data = riga[:idx_date].strip()
                 articolo = testo_prima_data
-            elif i > 0:
-                riga_sopra = righe_raw[i-1].strip()
-                if i > 1 and ("Descrizione" in riga_sopra or "Misure" in riga_sopra or "KG" in riga_sopra):
-                    riga_sopra = righe_raw[i-2].strip()
-                articolo = riga_sopra
+                
+                if i > 0 and (len(testo_prima_data) < 3 or re.match(r"^[\d\s x X \.-]+$", testo_prima_data)):
+                    riga_sopra = righe_raw[i-1].strip()
+                    if not "Descrizione" in riga_sopra:
+                        articolo = riga_sopra
 
-            if articolo:
-                articolo = re.sub(r"^\s*\(\d+\)\s*", "", articolo)
-                articolo = re.sub(r"Kg\s*[\d\.,]+", "", articolo, flags=re.IGNORECASE)
-                articolo = re.sub(r"Descrizione.*", "", articolo, flags=re.IGNORECASE)
-                articolo = re.sub(r"\s{2,}", " ", articolo).strip()
+                testo_dopo_data = riga[idx_date + len(m_consegna.group(1)):].strip()
+                numeri_destra = re.findall(r"\b\d{1,3}(?:\.\d{3})*(?:,\d+)?\b", testo_dopo_data)
+                
+                qta = numeri_destra[0] if len(numeri_destra) >= 1 else ""
+                prezzo_val = numeri_destra[1] if len(numeri_destra) >= 2 else ""
+                prezzo = f"€ {prezzo_val}" if prezzo_val else ""
 
-            if articolo and consegna:
-                righe_estratte.append({
-                    "CLIENTE": cliente,
-                    "N. ORDINE": n_ordine,
-                    "ARTICOLO": articolo,
-                    "CONSEGNA": consegna,
-                    "QUANTITÀ": qta,
-                    "PREZZO": prezzo
-                })
+                if articolo:
+                    articolo = re.sub(r"^\s*\(\d+\)\s*", "", articolo)
+                    articolo = re.sub(r"Kg\s*[\d\.,]+", "", articolo, flags=re.IGNORECASE)
+                    articolo = re.sub(r"\s{2,}", " ", articolo).strip()
+
+                if articolo and consegna:
+                    righe_estratte.append({
+                        "CLIENTE": cliente,
+                        "N. ORDINE": n_ordine,
+                        "ARTICOLO": articolo,
+                        "CONSEGNA": consegna,
+                        "QUANTITÀ": qta,
+                        "PREZZO": prezzo
+                    })
+
+    # =========================================================
+    # CASE 2: VECCHIA GRAFICA (ALGORITMO CLASSICO)
+    # =========================================================
+    else:
+        # 1. CLIENTE (Spett.le)
+        m_cliente = re.search(r"Spett\.le\s*\n\s*([^\n]+)", testo_semplice)
+        cliente = m_cliente.group(1).strip() if m_cliente else ""
+
+        # 2. N° ORDINE CLIENTE
+        n_ordine = ""
+        target_word = None
+        for w in words:
+            if "N°Ord" in w['text'] or "Cliente" in w['text']:
+                if w['top'] < 300:
+                    target_word = w
+                    break
+        
+        if target_word:
+            x0 = target_word['x0'] - 10
+            x1 = target_word['x1'] + 60
+            top = target_word['bottom']
+            bottom = top + 45
+            
+            num_words = [
+                w['text'].strip() for w in words 
+                if x0 <= w['x0'] <= x1 and top <= w['top'] <= bottom
+            ]
+            
+            for nw in num_words:
+                clean_num = re.sub(r"\D", "", nw)
+                if clean_num:
+                    n_ordine = clean_num
+                    break
+
+        if not n_ordine:
+            m_ord = re.search(r"N°Ord Cliente\s*[\n\r]*\s*(\d+)", testo_semplice)
+            if m_ord:
+                n_ordine = m_ord.group(1)
+
+        # 3. ESTRAZIONE ARTICOLI, CONSEGNA, QUANTITÀ, PREZZO
+        righe_raw = testo_layout.split("\n")
+        
+        for i, riga in enumerate(righe_raw):
+            m_consegna = re.search(r"(\d{2}/\d{2}/\d{4})", riga)
+            m_prezzo = re.search(r"€\s*([\d\.,]+)", riga)
+            
+            if m_consegna and m_prezzo:
+                consegna = m_consegna.group(1)
+                prezzo = f"€ {m_prezzo.group(1).strip()}"
+                
+                idx_date = riga.find(consegna)
+                idx_price = riga.find("€")
+                segmento_qta = riga[idx_date + len(consegna):idx_price]
+                m_qta = re.search(r"(\d{1,3}(?:\.\d{3})+|\d+)", segmento_qta)
+                qta = m_qta.group(1).strip() if m_qta else ""
+
+                articolo = ""
+                testo_prima_data = riga[:idx_date].strip()
+                if len(testo_prima_data) > 2:
+                    articolo = testo_prima_data
+                elif i > 0:
+                    riga_sopra = righe_raw[i-1].strip()
+                    riga_sopra_pulita = re.sub(r"Kg\s*[\d\.,]+", "", riga_sopra).strip()
+                    if riga_sopra_pulita and not "Descrizione" in riga_sopra_pulita:
+                        articolo = riga_sopra_pulita
+
+                if articolo:
+                    articolo = re.sub(r"^\s*\(\d+\)\s*", "", articolo)
+                    articolo = re.sub(r"Kg\s*[\d\.,]+", "", articolo)
+                    articolo = re.sub(r"\d+\s*x\s*\d+(\s*x\s*\d+)?", "", articolo, flags=re.IGNORECASE)
+                    articolo = re.sub(r"\s{2,}", " ", articolo).strip()
+
+                if not articolo or len(articolo) < 2:
+                    m_code = re.findall(r"\b(IMSCA\d+|[A-Z0-9]{4,15})\b", testo_semplice)
+                    if m_code and len(righe_estratte) < len(m_code):
+                        articolo = m_code[len(righe_estratte)]
+
+                if articolo and consegna:
+                    righe_estratte.append({
+                        "CLIENTE": cliente,
+                        "N. ORDINE": n_ordine,
+                        "ARTICOLO": articolo,
+                        "CONSEGNA": consegna,
+                        "QUANTITÀ": qta,
+                        "PREZZO": prezzo
+                    })
 
     return righe_estratte
 
@@ -340,7 +410,6 @@ with tab_database:
                 st.rerun()
 
         with col_del:
-            # Maschera di conferma elimina righe
             with st.popover("🗑️ Elimina Selezionate"):
                 righe_da_eliminare = edited_df[edited_df["Seleziona"] == True]
                 count_del = len(righe_da_eliminare)
