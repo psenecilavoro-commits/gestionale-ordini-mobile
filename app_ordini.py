@@ -95,6 +95,48 @@ def rinomina_articolo_cloud(vecchio_nome, nuovo_nome, cliente=None):
         return False
 
 # ---------------------------------------------------------
+# GESTIONE PERMANENTE COPPIE IGNORATE SU CLOUD
+# ---------------------------------------------------------
+def carica_coppie_ignorate_cloud():
+    try:
+        res = supabase.table("coppie_ignorate").select("articolo_a, articolo_b").execute()
+        coppie = []
+        for r in res.data:
+            coppie.append(tuple(sorted([r["articolo_a"], r["articolo_b"]])))
+        return coppie
+    except Exception as e:
+        st.error(f"Errore nel caricamento delle coppie ignorate: {e}")
+        return []
+
+def aggiungi_coppia_ignorata_cloud(art_a, art_b):
+    try:
+        a, b = sorted([art_a, art_b])
+        supabase.table("coppie_ignorate").insert({"articolo_a": a, "articolo_b": b}).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nel salvataggio coppia ignorata: {e}")
+        return False
+
+def rimuovi_ultima_coppia_ignorata_cloud():
+    try:
+        res = supabase.table("coppie_ignorate").select("id").order("id", desc=True).limit(1).execute()
+        if res.data:
+            last_id = res.data[0]["id"]
+            supabase.table("coppie_ignorate").delete().eq("id", last_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nella rimozione dell'ultima coppia ignorata: {e}")
+        return False
+
+def svuota_coppie_ignorate_cloud():
+    try:
+        supabase.table("coppie_ignorate").delete().neq("id", 0).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nello svuotamento delle coppie ignorate: {e}")
+        return False
+
+# ---------------------------------------------------------
 # FUNZIONE DI ESTRAZIONE MULTI-LAYOUT (VECCHIO + NUOVO)
 # ---------------------------------------------------------
 def estrai_dati_pdf(pdf_file):
@@ -110,11 +152,9 @@ def estrai_dati_pdf(pdf_file):
     # CASE 1: NUOVA GRAFICA INNOVA GROUP (BORGO SAN GIACOMO)
     # =========================================================
     if "BORGO SAN GIACOMO" in testo_semplice or "N° Ord. Cliente" in testo_semplice or "N Ord. Cliente" in testo_semplice:
-        # 1. CLIENTE (Spett.le)
         m_cli = re.search(r"Spett\.le\s*\n\s*([^\n]+)", testo_semplice)
         cliente = m_cli.group(1).strip() if m_cli else ""
 
-        # 2. N° ORDINE CLIENTE (Coordinate visive sotto la parola "Cliente")
         n_ordine = ""
         target_word = None
         for w in words:
@@ -142,7 +182,6 @@ def estrai_dati_pdf(pdf_file):
             if m_ord:
                 n_ordine = m_ord.group(1).strip()
 
-        # 3. TABELLA ARTICOLI
         righe_raw = testo_layout.split("\n")
         
         idx_inizio = 0
@@ -160,7 +199,6 @@ def estrai_dati_pdf(pdf_file):
                 testo_dopo_data = riga[idx_date + len(m_consegna.group(1)):].strip()
                 numeri_destra = re.findall(r"\b\d{1,3}(?:\.\d{3})*(?:,\d+)?\b", testo_dopo_data)
                 
-                # Se mancano quantità e prezzo è una riga di intestazione e viene saltata
                 if len(numeri_destra) < 2:
                     continue
 
@@ -168,7 +206,6 @@ def estrai_dati_pdf(pdf_file):
                 qta = numeri_destra[0]
                 prezzo = f"€ {numeri_destra[1]}"
 
-                # Descrizione articolo
                 descrizione = riga[:idx_date].strip()
                 if i > 0 and (len(descrizione) < 3 or re.match(r"^[\d\s x X \.-]+$", descrizione)):
                     riga_sopra = righe_raw[i-1].strip()
@@ -177,7 +214,6 @@ def estrai_dati_pdf(pdf_file):
 
                 descrizione = re.sub(r"Kg\s*[\d\.,]+", "", descrizione, flags=re.IGNORECASE).strip()
 
-                # Sigla Cartone (es. KMT242 B)
                 cartone = ""
                 m_cartone = re.search(r"\b([A-Z]{2,4}\d{2,4}\s*[A-Z0-9]*)\b", riga[idx_date:])
                 if not m_cartone and i + 1 < len(righe_raw):
@@ -302,7 +338,7 @@ if "select_all_state" not in st.session_state:
     st.session_state.select_all_state = False
 
 if "coppie_ignorate_list" not in st.session_state:
-    st.session_state.coppie_ignorate_list = []
+    st.session_state.coppie_ignorate_list = carica_coppie_ignorate_cloud()
 
 tab_database, tab_grafici, tab_norm_cli, tab_fuzzy = st.tabs([
     "📋 Database Ordini", 
@@ -658,7 +694,7 @@ with tab_norm_cli:
         st.warning("Database vuoto o in fase di caricamento.")
 
 # =========================================================
-# SCHEDA 4: PULIZIA SMART (FUZZY MATCHING)
+# SCHEDA 4: PULIZIA SMART (FUZZY MATCHING CON PERSISTENZA CLOUD)
 # =========================================================
 with tab_fuzzy:
     st.subheader("🤖 Rilevamento Automatico Duplicati e Varianti")
@@ -674,6 +710,7 @@ with tab_fuzzy:
         
         if col_f3.button("🔄 Ricarica DB Cloud", key="btn_fz_reload"):
             st.session_state.db_ordini = carica_db_cloud()
+            st.session_state.coppie_ignorate_list = carica_coppie_ignorate_cloud()
             st.rerun()
 
         if target_cli != "Tutti i Clienti":
@@ -719,13 +756,15 @@ with tab_fuzzy:
                     st.write("⚠️ **Conferma ripristino**")
                     st.caption("Vuoi far ricomparire tutte le coppie precedentemente ignorate?")
                     if st.button("Sì, ripristina tutte", type="primary", key="btn_confirm_all_restore"):
-                        st.session_state.coppie_ignorate_list.clear()
-                        st.rerun()
+                        if svuota_coppie_ignorate_cloud():
+                            st.session_state.coppie_ignorate_list = []
+                            st.rerun()
 
             with col_bar2:
                 if st.button("↩️ Ripristina ultima ignorata", key="btn_undo_last"):
-                    st.session_state.coppie_ignorate_list.pop()
-                    st.rerun()
+                    if rimuovi_ultima_coppia_ignorata_cloud():
+                        st.session_state.coppie_ignorate_list = carica_coppie_ignorate_cloud()
+                        st.rerun()
 
         if coppie_trovate:
             with col_bar3:
@@ -734,8 +773,9 @@ with tab_fuzzy:
                     st.caption(f"Vuoi nascondere tutte le {len(coppie_trovate)} coppie attualmente in elenco?")
                     if st.button("Sì, ignora tutte", type="primary", key="btn_confirm_all_ignore"):
                         for c in coppie_trovate:
-                            if c['key'] not in st.session_state.coppie_ignorate_list:
-                                st.session_state.coppie_ignorate_list.append(c['key'])
+                            if c['key'] not in set_ignorate:
+                                aggiungi_coppia_ignorata_cloud(c['key'][0], c['key'][1])
+                        st.session_state.coppie_ignorate_list = carica_coppie_ignorate_cloud()
                         st.rerun()
 
         st.divider()
@@ -750,9 +790,9 @@ with tab_fuzzy:
                     col_head_left.markdown(f"#### Coppia #{i+1} — Somiglianza: `{c['Somiglianza']}`")
                     
                     if col_head_right.button("❌ Ignora coppia", key=f"btn_ignore_{i}"):
-                        if c['key'] not in st.session_state.coppie_ignorate_list:
-                            st.session_state.coppie_ignorate_list.append(c['key'])
-                        st.rerun()
+                        if aggiungi_coppia_ignorata_cloud(c['key'][0], c['key'][1]):
+                            st.session_state.coppie_ignorate_list = carica_coppie_ignorate_cloud()
+                            st.rerun()
 
                     col_left, col_right = st.columns(2)
 
