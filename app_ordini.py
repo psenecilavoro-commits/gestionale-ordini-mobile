@@ -114,13 +114,35 @@ def estrai_dati_pdf(pdf_file):
         m_cli = re.search(r"Spett\.le\s*\n\s*([^\n]+)", testo_semplice)
         cliente = m_cli.group(1).strip() if m_cli else ""
 
-        # 2. N° ORDINE CLIENTE (Ricerca mirata del codice d'ordine cliente es. 269/OF)
+        # 2. N° ORDINE CLIENTE (Coordinate visive sotto la parola "Cliente")
         n_ordine = ""
-        m_ord = re.search(r"N°?\s*Ord\.?\s*Cliente\s*[\n\r]*\s*([A-Z0-9/\-_]+)", testo_semplice, re.IGNORECASE)
-        if m_ord:
-            n_ordine = m_ord.group(1).strip()
+        target_word = None
+        for w in words:
+            if "Cliente" in w['text'] and w['top'] < 300:
+                target_word = w
+                break
+        
+        if target_word:
+            x0 = target_word['x0'] - 30
+            x1 = target_word['x1'] + 60
+            top = target_word['bottom']
+            bottom = top + 35
+            
+            num_words = [
+                w['text'].strip() for w in words 
+                if x0 <= w['x0'] <= x1 and top <= w['top'] <= bottom
+            ]
+            for nw in num_words:
+                if re.search(r"\d", nw) and "Causale" not in nw:
+                    n_ordine = nw
+                    break
 
-        # 3. TABELLA ARTICOLI (Ignora la testata e processa solo le righe valide)
+        if not n_ordine:
+            m_ord = re.search(r"N°?\s*Ord\.?\s*Cliente\s*[\n\r]*\s*([A-Z0-9/\-_]+)", testo_semplice, re.IGNORECASE)
+            if m_ord:
+                n_ordine = m_ord.group(1).strip()
+
+        # 3. TABELLA ARTICOLI
         righe_raw = testo_layout.split("\n")
         
         idx_inizio = 0
@@ -132,14 +154,13 @@ def estrai_dati_pdf(pdf_file):
         for i in range(idx_inizio + 1, len(righe_raw)):
             riga = righe_raw[i]
             
-            # Cerca solo righe con data di consegna e quantità visibile
             m_consegna = re.search(r"(\d{2}\.\d{2}\.\d{4})", riga)
             if m_consegna:
                 idx_date = riga.find(m_consegna.group(1))
                 testo_dopo_data = riga[idx_date + len(m_consegna.group(1)):].strip()
                 numeri_destra = re.findall(r"\b\d{1,3}(?:\.\d{3})*(?:,\d+)?\b", testo_dopo_data)
                 
-                # Se mancano quantità e prezzo è una riga di testata e va ignorata
+                # Se mancano quantità e prezzo è una riga di intestazione e viene saltata
                 if len(numeri_destra) < 2:
                     continue
 
@@ -147,7 +168,7 @@ def estrai_dati_pdf(pdf_file):
                 qta = numeri_destra[0]
                 prezzo = f"€ {numeri_destra[1]}"
 
-                # Estrazione Descrizione
+                # Descrizione articolo
                 descrizione = riga[:idx_date].strip()
                 if i > 0 and (len(descrizione) < 3 or re.match(r"^[\d\s x X \.-]+$", descrizione)):
                     riga_sopra = righe_raw[i-1].strip()
@@ -156,7 +177,7 @@ def estrai_dati_pdf(pdf_file):
 
                 descrizione = re.sub(r"Kg\s*[\d\.,]+", "", descrizione, flags=re.IGNORECASE).strip()
 
-                # Estrazione Sigla Cartone (es. KMT242 B) senza duplicazione
+                # Sigla Cartone (es. KMT242 B)
                 cartone = ""
                 m_cartone = re.search(r"\b([A-Z]{2,4}\d{2,4}\s*[A-Z0-9]*)\b", riga[idx_date:])
                 if not m_cartone and i + 1 < len(righe_raw):
@@ -165,7 +186,6 @@ def estrai_dati_pdf(pdf_file):
                 if m_cartone:
                     cartone = m_cartone.group(1).strip()
 
-                # Unione pulita: aggiunge la sigla cartone solo se non è già presente nella descrizione
                 if cartone and cartone not in descrizione:
                     articolo_completo = f"{descrizione} {cartone}".strip()
                 else:
