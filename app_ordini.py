@@ -95,7 +95,7 @@ def rinomina_articolo_cloud(vecchio_nome, nuovo_nome, cliente=None):
         return False
 
 # ---------------------------------------------------------
-# FUNZIONE DI ESTRAZIONE A COORDINATE VISIVE
+# FUNZIONE DI ESTRAZIONE A COORDINATE VISIVE (UNIVERSALE)
 # ---------------------------------------------------------
 def estrai_dati_pdf(pdf_file):
     righe_estratte = []
@@ -106,22 +106,24 @@ def estrai_dati_pdf(pdf_file):
         testo_layout = page.extract_text(layout=True) or ""
         testo_semplice = page.extract_text(layout=False) or ""
 
+    # 1. CLIENTE (Spett.le)
     m_cliente = re.search(r"Spett\.le\s*\n\s*([^\n]+)", testo_semplice)
     cliente = m_cliente.group(1).strip() if m_cliente else ""
 
+    # 2. N° ORDINE CLIENTE (Supporta sia "N°Ord Cliente" che "N° Ord. Cliente")
     n_ordine = ""
     target_word = None
     for w in words:
-        if "N°Ord" in w['text'] or "Cliente" in w['text']:
+        if "N°" in w['text'] or "Ord" in w['text'] or "Cliente" in w['text']:
             if w['top'] < 300:
                 target_word = w
                 break
     
     if target_word:
-        x0 = target_word['x0'] - 10
-        x1 = target_word['x1'] + 60
+        x0 = target_word['x0'] - 20
+        x1 = target_word['x1'] + 80
         top = target_word['bottom']
-        bottom = top + 45
+        bottom = top + 50
         
         num_words = [
             w['text'].strip() for w in words 
@@ -129,52 +131,49 @@ def estrai_dati_pdf(pdf_file):
         ]
         
         for nw in num_words:
-            clean_num = re.sub(r"\D", "", nw)
-            if clean_num:
-                n_ordine = clean_num
+            if re.search(r"\d", nw) and not "Spett" in nw:
+                n_ordine = nw
                 break
 
     if not n_ordine:
-        m_ord = re.search(r"N°Ord Cliente\s*[\n\r]*\s*(\d+)", testo_semplice)
+        m_ord = re.search(r"N°\s*Ord\.?\s*Cliente\s*[\n\r]*\s*([A-Z0-9/\-_]+)", testo_semplice, re.IGNORECASE)
         if m_ord:
-            n_ordine = m_ord.group(1)
+            n_ordine = m_ord.group(1).strip()
 
+    # 3. ESTRAZIONE ARTICOLI, CONSEGNA, QUANTITÀ, PREZZO
     righe_raw = testo_layout.split("\n")
     
     for i, riga in enumerate(righe_raw):
-        m_consegna = re.search(r"(\d{2}/\d{2}/\d{4})", riga)
-        m_prezzo = re.search(r"€\s*([\d\.,]+)", riga)
+        m_consegna = re.search(r"(\d{2}\.\d{2}\.\d{4}|\d{2}/\d{2}/\d{4})", riga)
+        m_prezzo = re.search(r"(?:€\s*)?([\d]+[\.,]\d{2,4})\b", riga)
         
         if m_consegna and m_prezzo:
-            consegna = m_consegna.group(1)
-            prezzo = f"€ {m_prezzo.group(1).strip()}"
+            consegna = m_consegna.group(1).replace(".", "/")
+            val_prezzo = m_prezzo.group(1).strip()
+            prezzo = f"€ {val_prezzo}"
             
-            idx_date = riga.find(consegna)
-            idx_price = riga.find("€")
-            segmento_qta = riga[idx_date + len(consegna):idx_price]
+            idx_date = riga.find(m_consegna.group(1))
+            
+            segmento_qta = riga[idx_date + len(m_consegna.group(1)):].strip()
             m_qta = re.search(r"(\d{1,3}(?:\.\d{3})+|\d+)", segmento_qta)
             qta = m_qta.group(1).strip() if m_qta else ""
 
             articolo = ""
             testo_prima_data = riga[:idx_date].strip()
-            if len(testo_prima_data) > 2:
+            
+            if len(testo_prima_data) > 3:
                 articolo = testo_prima_data
             elif i > 0:
                 riga_sopra = righe_raw[i-1].strip()
-                riga_sopra_pulita = re.sub(r"Kg\s*[\d\.,]+", "", riga_sopra).strip()
-                if riga_sopra_pulita and not "Descrizione" in riga_sopra_pulita:
-                    articolo = riga_sopra_pulita
+                if i > 1 and ("Descrizione" in riga_sopra or "Misure" in riga_sopra or "KG" in riga_sopra):
+                    riga_sopra = righe_raw[i-2].strip()
+                articolo = riga_sopra
 
             if articolo:
                 articolo = re.sub(r"^\s*\(\d+\)\s*", "", articolo)
-                articolo = re.sub(r"Kg\s*[\d\.,]+", "", articolo)
-                articolo = re.sub(r"\d+\s*x\s*\d+(\s*x\s*\d+)?", "", articolo, flags=re.IGNORECASE)
+                articolo = re.sub(r"Kg\s*[\d\.,]+", "", articolo, flags=re.IGNORECASE)
+                articolo = re.sub(r"Descrizione.*", "", articolo, flags=re.IGNORECASE)
                 articolo = re.sub(r"\s{2,}", " ", articolo).strip()
-
-            if not articolo or len(articolo) < 2:
-                m_code = re.findall(r"\b(IMSCA\d+|[A-Z0-9]{4,15})\b", testo_semplice)
-                if m_code and len(righe_estratte) < len(m_code):
-                    articolo = m_code[len(righe_estratte)]
 
             if articolo and consegna:
                 righe_estratte.append({
@@ -603,12 +602,8 @@ with tab_fuzzy:
                     })
                 processati.add(art_b)
 
-        # ---------------------------------------------------------
-        # BARRA DEGLI STRUMENTI: RIPRISTINO E IGNORA TOTALE
-        # ---------------------------------------------------------
         col_bar1, col_bar2, col_bar3 = st.columns([1.8, 1.8, 2.2])
 
-        # 1. Popover con maschera di conferma per RIPRISTINARE TUTTO
         if st.session_state.coppie_ignorate_list:
             with col_bar1:
                 with st.popover(f"👁️ Ripristina {len(st.session_state.coppie_ignorate_list)} ignorate"):
@@ -623,7 +618,6 @@ with tab_fuzzy:
                     st.session_state.coppie_ignorate_list.pop()
                     st.rerun()
 
-        # 2. Popover con maschera di conferma per IGNORARE TUTTE LE COPPIE VISIBILI
         if coppie_trovate:
             with col_bar3:
                 with st.popover(f"❌ Ignora tutte le {len(coppie_trovate)} coppie visibili"):
