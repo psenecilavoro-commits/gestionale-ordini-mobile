@@ -106,11 +106,9 @@ def estrai_dati_pdf(pdf_file):
         testo_layout = page.extract_text(layout=True) or ""
         testo_semplice = page.extract_text(layout=False) or ""
 
-    # 1. CLIENTE (Spett.le)
     m_cliente = re.search(r"Spett\.le\s*\n\s*([^\n]+)", testo_semplice)
     cliente = m_cliente.group(1).strip() if m_cliente else ""
 
-    # 2. N° ORDINE CLIENTE (Supporta sia "N°Ord Cliente" che "N° Ord. Cliente")
     n_ordine = ""
     target_word = None
     for w in words:
@@ -140,7 +138,6 @@ def estrai_dati_pdf(pdf_file):
         if m_ord:
             n_ordine = m_ord.group(1).strip()
 
-    # 3. ESTRAZIONE ARTICOLI, CONSEGNA, QUANTITÀ, PREZZO
     righe_raw = testo_layout.split("\n")
     
     for i, riga in enumerate(righe_raw):
@@ -330,33 +327,43 @@ with tab_database:
             key="editor_ordini"
         )
 
-        col_sel_all, col_del, col_exp = st.columns([1.5, 1.5, 2])
+        col_sel_all, col_unsel_all, col_del, col_exp = st.columns([1.5, 1.5, 1.8, 1.8])
         
         with col_sel_all:
-            if st.button("☑️ Seleziona Tutte le Righe"):
+            if st.button("☑️ Seleziona Tutte"):
                 st.session_state.select_all_state = True
                 st.rerun()
 
+        with col_unsel_all:
+            if st.button("⬜ Deseleziona Tutte"):
+                st.session_state.select_all_state = False
+                st.rerun()
+
         with col_del:
-            if st.button("🗑️ Elimina Righe Selezionate"):
+            # Maschera di conferma elimina righe
+            with st.popover("🗑️ Elimina Selezionate"):
                 righe_da_eliminare = edited_df[edited_df["Seleziona"] == True]
-                if not righe_da_eliminare.empty:
-                    indici_visibili = righe_da_eliminare.index
-                    ids_da_eliminare = df_filtrato.loc[indici_visibili, "id"].tolist()
-                    for item_id in ids_da_eliminare:
-                        if item_id:
-                            supabase.table("ordini").delete().eq("id", item_id).execute()
-                    st.session_state.db_ordini = carica_db_cloud()
-                    st.session_state.select_all_state = False
-                    st.success(f"Eliminate {len(ids_da_eliminare)} righe dal Cloud!")
-                    st.rerun()
+                count_del = len(righe_da_eliminare)
+                if count_del > 0:
+                    st.write("⚠️ **Conferma eliminazione**")
+                    st.caption(f"Sei sicuro di voler eliminare **{count_del}** righe dal database Cloud?")
+                    if st.button("Sì, elimina definitivamente", type="primary", key="btn_confirm_delete_rows"):
+                        indici_visibili = righe_da_eliminare.index
+                        ids_da_eliminare = df_filtrato.loc[indici_visibili, "id"].tolist()
+                        for item_id in ids_da_eliminare:
+                            if item_id:
+                                supabase.table("ordini").delete().eq("id", item_id).execute()
+                        st.session_state.db_ordini = carica_db_cloud()
+                        st.session_state.select_all_state = False
+                        st.success(f"Eliminate {len(ids_da_eliminare)} righe dal Cloud!")
+                        st.rerun()
                 else:
-                    st.warning("Seleziona prima le righe da eliminare.")
+                    st.info("Spunta prima la casella 'Seleziona' sulle righe da eliminare.")
 
         with col_exp:
             csv = df_filtrato.drop(columns=["id"], errors="ignore").to_csv(index=False).encode('utf-8')
             st.download_button(
-                label="📥 Scarica Tabella (CSV)",
+                label="📥 Scarica CSV",
                 data=csv,
                 file_name='database_ordini_cloud.csv',
                 mime='text/csv',
