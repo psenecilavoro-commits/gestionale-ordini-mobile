@@ -28,7 +28,6 @@ def carica_db_cloud():
         step = 1000
         inizio = 0
         
-        # Recupera tutti i dati a blocchi di 1000 righe per superare il limite standard
         while True:
             response = supabase.table("ordini").select("*").range(inizio, inizio + step - 1).execute()
             batch = response.data
@@ -42,7 +41,6 @@ def carica_db_cloud():
         if tutti_i_dati:
             df = pd.DataFrame(tutti_i_dati)
             
-            # Normalizzazione dinamica dei nomi colonne (supporta sia maiuscolo che minuscolo)
             mappa_colonne = {
                 'cliente': 'CLIENTE',
                 'n_ordine': 'N. ORDINE',
@@ -53,7 +51,6 @@ def carica_db_cloud():
             }
             df = df.rename(columns=mappa_colonne)
             
-            # Rimuove colonne interne se presenti
             cols_to_drop = [c for c in ['created_at'] if c in df.columns]
             if cols_to_drop:
                 df = df.drop(columns=cols_to_drop)
@@ -86,9 +83,12 @@ def inserisci_ordini_cloud(nuovi_dati):
         st.error(f"Errore nel salvataggio sul Cloud: {e}")
         return False
 
-def rinomina_articolo_cloud(vecchio_nome, nuovo_nome):
+def rinomina_articolo_cloud(vecchio_nome, nuovo_nome, cliente=None):
     try:
-        supabase.table("ordini").update({"articolo": nuovo_nome}).eq("articolo", vecchio_nome).execute()
+        query = supabase.table("ordini").update({"articolo": nuovo_nome}).eq("articolo", vecchio_nome)
+        if cliente:
+            query = query.eq("cliente", cliente)
+        query.execute()
         return True
     except Exception as e:
         st.error(f"Errore nell'aggiornamento dell'articolo sul Cloud: {e}")
@@ -106,11 +106,9 @@ def estrai_dati_pdf(pdf_file):
         testo_layout = page.extract_text(layout=True) or ""
         testo_semplice = page.extract_text(layout=False) or ""
 
-    # 1. CLIENTE (Spett.le)
     m_cliente = re.search(r"Spett\.le\s*\n\s*([^\n]+)", testo_semplice)
     cliente = m_cliente.group(1).strip() if m_cliente else ""
 
-    # 2. N° ORDINE CLIENTE
     n_ordine = ""
     target_word = None
     for w in words:
@@ -141,7 +139,6 @@ def estrai_dati_pdf(pdf_file):
         if m_ord:
             n_ordine = m_ord.group(1)
 
-    # 3. ESTRAZIONE ARTICOLI, CONSEGNA, QUANTITÀ, PREZZO
     righe_raw = testo_layout.split("\n")
     
     for i, riga in enumerate(righe_raw):
@@ -192,7 +189,7 @@ def estrai_dati_pdf(pdf_file):
     return righe_estratte
 
 # ---------------------------------------------------------
-# INTERFACCIA STREAMLIT A SCHEDE (TABS)
+# INTERFACCIA STREAMLIT A TABS (4 SCHEDE)
 # ---------------------------------------------------------
 st.title("📦 Gestionale Ordini PDF (Cloud Supabase)")
 
@@ -205,9 +202,10 @@ if "uploader_key" not in st.session_state:
 if "select_all_state" not in st.session_state:
     st.session_state.select_all_state = False
 
-tab_database, tab_grafici, tab_fuzzy = st.tabs([
+tab_database, tab_grafici, tab_norm_cli, tab_fuzzy = st.tabs([
     "📋 Database Ordini", 
     "📈 Analisi & Grafici", 
+    "🏷️ Normalizzazione Cliente",
     "🤖 Pulizia Smart (Fuzzy)"
 ])
 
@@ -320,7 +318,6 @@ with tab_database:
         c2.metric("Clienti Distinti", df_filtrato["CLIENTE"].nunique())
         c3.metric("Articoli Distinti", df_filtrato["ARTICOLO"].nunique())
 
-        # Rimuove la colonna id per la visualizzazione pulita in tabella
         df_display = df_filtrato.drop(columns=["id"], errors="ignore").copy()
         df_display.insert(0, "Seleziona", st.session_state.select_all_state)
 
@@ -363,9 +360,6 @@ with tab_database:
                 mime='text/csv',
             )
 
-        # ---------------------------------------------------------
-        # MODIFICA / UNIFICA RAGIONE SOCIALE
-        # ---------------------------------------------------------
         st.divider()
         st.subheader("✏️ Modifica / Unifica Ragione Sociale")
         st.caption("Seleziona una o più righe dalla tabella in alto spuntando la casella 'Seleziona', poi imposta la nuova ragione sociale qui sotto.")
@@ -405,9 +399,6 @@ with tab_database:
                 st.success(f"Aggiornate {len(ids_da_aggiornare)} righe con la ragione sociale: '{nome_finale}'!")
                 st.rerun()
 
-        # ---------------------------------------------------------
-        # MODIFICA / UNIFICA NOME ARTICOLO
-        # ---------------------------------------------------------
         st.subheader("🏷️ Modifica / Unifica Nome Articolo")
         st.caption("Seleziona una o più righe dalla tabella in alto spuntando la casella 'Seleziona', poi imposta il nuovo nome articolo qui sotto.")
 
@@ -504,7 +495,61 @@ with tab_grafici:
         st.info("Carica dei file PDF nella prima scheda per generare i grafici.")
 
 # =========================================================
-# SCHEDA 3: PULIZIA SMART (FUZZY MATCHING)
+# SCHEDA 3: NORMALIZZAZIONE VELOCE PER CLIENTE
+# =========================================================
+with tab_norm_cli:
+    st.subheader("🏷️ Normalizzazione Veloce Articoli per Cliente")
+    st.markdown("Seleziona un cliente per visualizzare l'elenco dei suoi articoli in database, vedere quante volte compaiono e unificare le varianti obsolete in un solo clic.")
+
+    df_nc = st.session_state.db_ordini
+    if not df_nc.empty:
+        list_clienti_nc = sorted([x for x in df_nc["CLIENTE"].unique() if str(x).strip()])
+        sel_cli_nc = st.selectbox("👤 Seleziona Cliente:", ["-- Seleziona un cliente --"] + list_clienti_nc, key="nc_cli")
+
+        if sel_cli_nc != "-- Seleziona un cliente --":
+            df_cli_nc = df_nc[df_nc["CLIENTE"] == sel_cli_nc]
+            
+            # Conteggio frequenza articoli per questo cliente
+            art_counts = df_cli_nc["ARTICOLO"].value_counts().reset_index()
+            art_counts.columns = ["ARTICOLO", "N° ORDINI"]
+
+            col_list, col_action = st.columns([3, 2])
+
+            with col_list:
+                st.markdown(f"### Articoli trovati per **{sel_cli_nc}** ({len(art_counts)} distinti)")
+                st.dataframe(art_counts, use_container_width=True)
+
+            with col_action:
+                st.markdown("### 🔄 Unifica due articoli")
+                st.caption("Seleziona l'articolo da sostituire e quello definitivo da mantenere.")
+
+                articoli_cli_list = sorted(art_counts["ARTICOLO"].tolist())
+                
+                art_da_cambiare = st.selectbox("❌ Articolo da SOSTITUIRE (obsoleto/errato):", ["-- Seleziona --"] + articoli_cli_list, key="nc_from")
+                
+                # Escludiamo l'articolo selezionato come 'da cambiare' dalla seconda lista
+                articoli_dest_list = [a for a in articoli_cli_list if a != art_da_cambiare]
+                art_destinazione = st.selectbox("✅ Nuovo nome CORRETTO (da applicare):", ["-- Seleziona o scrivi sotto --"] + articoli_dest_list, key="nc_to_sel")
+                
+                art_dest_custom = st.text_input("Oppure digita un nuovo nome valido:", placeholder="Digita qui...", key="nc_to_txt")
+
+                nome_definitivo = art_dest_custom.strip() if art_dest_custom.strip() else (art_destinazione if art_destinazione != "-- Seleziona o scrivi sotto --" else "")
+
+                if st.button("🚀 Unifica per questo Cliente", type="primary", key="btn_nc_apply"):
+                    if art_da_cambiare == "-- Seleziona --":
+                        st.warning("Seleziona prima l'articolo da sostituire.")
+                    elif not nome_definitivo:
+                        st.warning("Seleziona o digita il nome dell'articolo corretto.")
+                    else:
+                        if rinomina_articolo_cloud(art_da_cambiare, nome_definitivo, cliente=sel_cli_nc):
+                            st.success(f"Tutti gli ordini di '{art_da_cambiare}' per {sel_cli_nc} sono stati rinominati in '{nome_definitivo}'!")
+                            st.session_state.db_ordini = carica_db_cloud()
+                            st.rerun()
+    else:
+        st.warning("Database vuoto o in fase di caricamento.")
+
+# =========================================================
+# SCHEDA 4: PULIZIA SMART (FUZZY MATCHING)
 # =========================================================
 with tab_fuzzy:
     st.subheader("🤖 Rilevamento Automatico Duplicati e Varianti")
@@ -522,7 +567,6 @@ with tab_fuzzy:
             st.session_state.db_ordini = carica_db_cloud()
             st.rerun()
 
-        # Filtra DF per il cliente scelto
         if target_cli != "Tutti i Clienti":
             df_work = df_fz[df_fz["CLIENTE"] == target_cli]
         else:
@@ -531,14 +575,12 @@ with tab_fuzzy:
         articoli_unici = sorted([a for a in df_work["ARTICOLO"].unique() if str(a).strip()])
         st.info(f"Articoli distinti da analizzare: **{len(articoli_unici)}**")
 
-        # Algoritmo di confronto vettoriale
         coppie_trovate = []
         processati = set()
 
         for idx, art_a in enumerate(articoli_unici):
             if art_a in processati:
                 continue
-            # Confronta art_a con tutti i successivi
             match = process.extract(
                 art_a, 
                 articoli_unici[idx+1:], 
