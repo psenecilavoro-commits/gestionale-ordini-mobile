@@ -109,40 +109,50 @@ def estrai_dati_pdf(pdf_file):
     # =========================================================
     # CASE 1: NUOVA GRAFICA INNOVA GROUP (BORGO SAN GIACOMO)
     # =========================================================
-    if "BORGO SAN GIACOMO" in testo_semplice or "N° Ord. Cliente" in testo_semplice:
-        # 1. Cliente
+    if "BORGO SAN GIACOMO" in testo_semplice or "N° Ord. Cliente" in testo_semplice or "N Ord. Cliente" in testo_semplice:
+        # 1. CLIENTE (Spett.le)
         m_cli = re.search(r"Spett\.le\s*\n\s*([^\n]+)", testo_semplice)
         cliente = m_cli.group(1).strip() if m_cli else ""
 
-        # 2. N° Ordine Cliente (es. 269/OF)
-        m_ord = re.search(r"N°\s*Ord\.\s*Cliente\s*[\n\r]*\s*([A-Z0-9/\-_]+)", testo_semplice, re.IGNORECASE)
+        # 2. N° ORDINE CLIENTE (es. 269/OF)
+        m_ord = re.search(r"N°?\s*Ord\.?\s*Cliente\s*[\n\r]*\s*([A-Z0-9/\-_]+)", testo_semplice, re.IGNORECASE)
         n_ordine = m_ord.group(1).strip() if m_ord else ""
 
-        # 3. Righe Tabella Articoli
+        # 3. TABELLA ARTICOLI (Parsing a colonne visive)
         righe_raw = testo_layout.split("\n")
         
-        idx_inizio_tabella = 0
         for i, riga in enumerate(righe_raw):
-            if "Descrizione" in riga and "Quantità" in riga:
-                idx_inizio_tabella = i
-                break
-
-        for i in range(idx_inizio_tabella + 1, len(righe_raw)):
-            riga = righe_raw[i]
-            
             m_consegna = re.search(r"(\d{2}\.\d{2}\.\d{4})", riga)
             if m_consegna:
                 consegna = m_consegna.group(1).replace(".", "/")
                 idx_date = riga.find(m_consegna.group(1))
                 
+                # Cerca l'articolo principale nella riga corrente o in quella immediatamente sopra
+                descrizione = ""
                 testo_prima_data = riga[:idx_date].strip()
-                articolo = testo_prima_data
                 
-                if i > 0 and (len(testo_prima_data) < 3 or re.match(r"^[\d\s x X \.-]+$", testo_prima_data)):
+                if len(testo_prima_data) > 3 and not re.match(r"^[\d\s x X \.-]+$", testo_prima_data):
+                    descrizione = testo_prima_data
+                elif i > 0:
                     riga_sopra = righe_raw[i-1].strip()
-                    if not "Descrizione" in riga_sopra:
-                        articolo = riga_sopra
+                    if "Descrizione" not in riga_sopra:
+                        descrizione = riga_sopra
 
+                # Pulizia della descrizione (rimuove eventuali diciture Kg)
+                descrizione = re.sub(r"Kg\s*[\d\.,]+", "", descrizione, flags=re.IGNORECASE).strip()
+
+                # Cerca la sigla della colonna CARTONE (es. KMT242 B)
+                cartone = ""
+                # Guarda tra la riga corrente e le 2 successive dove compaiono i codici cartone
+                finestra_ricerca = " ".join(righe_raw[max(0, i-1):min(len(righe_raw), i+2)])
+                m_cartone = re.search(r"\b([A-Z]{2,4}\d{2,4}\s*[A-Z0-9]*)\b", finestra_ricerca)
+                if m_cartone:
+                    cartone = m_cartone.group(1).strip()
+
+                # Unione delle due colonne ARTICOLO (Descrizione + Cartone)
+                articolo_completo = f"{descrizione} {cartone}".strip() if cartone else descrizione
+
+                # Estrazione QUANTITÀ e PREZZO a destra della data
                 testo_dopo_data = riga[idx_date + len(m_consegna.group(1)):].strip()
                 numeri_destra = re.findall(r"\b\d{1,3}(?:\.\d{3})*(?:,\d+)?\b", testo_dopo_data)
                 
@@ -150,23 +160,18 @@ def estrai_dati_pdf(pdf_file):
                 prezzo_val = numeri_destra[1] if len(numeri_destra) >= 2 else ""
                 prezzo = f"€ {prezzo_val}" if prezzo_val else ""
 
-                if articolo:
-                    articolo = re.sub(r"^\s*\(\d+\)\s*", "", articolo)
-                    articolo = re.sub(r"Kg\s*[\d\.,]+", "", articolo, flags=re.IGNORECASE)
-                    articolo = re.sub(r"\s{2,}", " ", articolo).strip()
-
-                if articolo and consegna:
+                if articolo_completo and consegna:
                     righe_estratte.append({
                         "CLIENTE": cliente,
                         "N. ORDINE": n_ordine,
-                        "ARTICOLO": articolo,
+                        "ARTICOLO": articolo_completo,
                         "CONSEGNA": consegna,
                         "QUANTITÀ": qta,
                         "PREZZO": prezzo
                     })
 
     # =========================================================
-    # CASE 2: VECCHIA GRAFICA (ALGORITMO CLASSICO)
+    # CASE 2: VECCHIA GRAFICA (ALGORITMO CLASSICO INVARIATO)
     # =========================================================
     else:
         # 1. CLIENTE (Spett.le)
