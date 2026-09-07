@@ -28,7 +28,6 @@ def carica_db_cloud():
         step = 1000
         inizio = 0
         
-        # Recupera tutti i dati a blocchi di 1000 righe per superare il limite standard
         while True:
             response = supabase.table("ordini").select("*").range(inizio, inizio + step - 1).execute()
             batch = response.data
@@ -42,7 +41,6 @@ def carica_db_cloud():
         if tutti_i_dati:
             df = pd.DataFrame(tutti_i_dati)
             
-            # Normalizzazione dinamica dei nomi colonne (supporta sia maiuscolo che minuscolo)
             mappa_colonne = {
                 'cliente': 'CLIENTE',
                 'n_ordine': 'N. ORDINE',
@@ -53,7 +51,6 @@ def carica_db_cloud():
             }
             df = df.rename(columns=mappa_colonne)
             
-            # Rimuove colonne interne se presenti
             cols_to_drop = [c for c in ['created_at'] if c in df.columns]
             if cols_to_drop:
                 df = df.drop(columns=cols_to_drop)
@@ -109,11 +106,9 @@ def estrai_dati_pdf(pdf_file):
         testo_layout = page.extract_text(layout=True) or ""
         testo_semplice = page.extract_text(layout=False) or ""
 
-    # 1. CLIENTE (Spett.le)
     m_cliente = re.search(r"Spett\.le\s*\n\s*([^\n]+)", testo_semplice)
     cliente = m_cliente.group(1).strip() if m_cliente else ""
 
-    # 2. N° ORDINE CLIENTE
     n_ordine = ""
     target_word = None
     for w in words:
@@ -144,7 +139,6 @@ def estrai_dati_pdf(pdf_file):
         if m_ord:
             n_ordine = m_ord.group(1)
 
-    # 3. ESTRAZIONE ARTICOLI, CONSEGNA, QUANTITÀ, PREZZO
     righe_raw = testo_layout.split("\n")
     
     for i, riga in enumerate(righe_raw):
@@ -208,7 +202,6 @@ if "uploader_key" not in st.session_state:
 if "select_all_state" not in st.session_state:
     st.session_state.select_all_state = False
 
-# Lista ordinata per tracciare le coppie ignorate dall'utente (gestisce l'ultima inserita)
 if "coppie_ignorate_list" not in st.session_state:
     st.session_state.coppie_ignorate_list = []
 
@@ -557,7 +550,7 @@ with tab_norm_cli:
         st.warning("Database vuoto o in fase di caricamento.")
 
 # =========================================================
-# SCHEDA 4: PULIZIA SMART (FUZZY MATCHING) CON RIPRISTINO ADVANCED
+# SCHEDA 4: PULIZIA SMART (FUZZY MATCHING)
 # =========================================================
 with tab_fuzzy:
     st.subheader("🤖 Rilevamento Automatico Duplicati e Varianti")
@@ -574,27 +567,6 @@ with tab_fuzzy:
         if col_f3.button("🔄 Ricarica DB Cloud", key="btn_fz_reload"):
             st.session_state.db_ordini = carica_db_cloud()
             st.rerun()
-
-        # ---------------------------------------------------------
-        # PULSANTI DI RIPRISTINO (POPOVER DI CONFERMA + ANNULLA LATEST)
-        # ---------------------------------------------------------
-        if st.session_state.coppie_ignorate_list:
-            col_rip1, col_rip2, _ = st.columns([1.8, 1.8, 2.4])
-
-            # 1. Popover con maschera di conferma per ripristinare TUTTO
-            with col_rip1:
-                with st.popover(f"👁️ Ripristina {len(st.session_state.coppie_ignorate_list)} coppie ignorate"):
-                    st.write("⚠️ **Conferma ripristino**")
-                    st.caption("Vuoi ripristinare tutte le coppie ignorate?")
-                    if st.button("Sì, ripristina tutte", type="primary", key="btn_confirm_all"):
-                        st.session_state.coppie_ignorate_list.clear()
-                        st.rerun()
-
-            # 2. Pulsante immediato per ripristinare SOLO L'ULTIMA
-            with col_rip2:
-                if st.button("↩️ Ripristina ultima ignorata", key="btn_undo_last"):
-                    st.session_state.coppie_ignorate_list.pop()
-                    st.rerun()
 
         if target_cli != "Tutti i Clienti":
             df_work = df_fz[df_fz["CLIENTE"] == target_cli]
@@ -630,6 +602,40 @@ with tab_fuzzy:
                         "Conteggio B": len(df_work[df_work["ARTICOLO"] == art_b])
                     })
                 processati.add(art_b)
+
+        # ---------------------------------------------------------
+        # BARRA DEGLI STRUMENTI: RIPRISTINO E IGNORA TOTALE
+        # ---------------------------------------------------------
+        col_bar1, col_bar2, col_bar3 = st.columns([1.8, 1.8, 2.2])
+
+        # 1. Popover con maschera di conferma per RIPRISTINARE TUTTO
+        if st.session_state.coppie_ignorate_list:
+            with col_bar1:
+                with st.popover(f"👁️ Ripristina {len(st.session_state.coppie_ignorate_list)} ignorate"):
+                    st.write("⚠️ **Conferma ripristino**")
+                    st.caption("Vuoi far ricomparire tutte le coppie precedentemente ignorate?")
+                    if st.button("Sì, ripristina tutte", type="primary", key="btn_confirm_all_restore"):
+                        st.session_state.coppie_ignorate_list.clear()
+                        st.rerun()
+
+            with col_bar2:
+                if st.button("↩️ Ripristina ultima ignorata", key="btn_undo_last"):
+                    st.session_state.coppie_ignorate_list.pop()
+                    st.rerun()
+
+        # 2. Popover con maschera di conferma per IGNORARE TUTTE LE COPPIE VISIBILI
+        if coppie_trovate:
+            with col_bar3:
+                with st.popover(f"❌ Ignora tutte le {len(coppie_trovate)} coppie visibili"):
+                    st.write("⚠️ **Conferma operazione**")
+                    st.caption(f"Vuoi nascondere tutte le {len(coppie_trovate)} coppie attualmente in elenco?")
+                    if st.button("Sì, ignora tutte", type="primary", key="btn_confirm_all_ignore"):
+                        for c in coppie_trovate:
+                            if c['key'] not in st.session_state.coppie_ignorate_list:
+                                st.session_state.coppie_ignorate_list.append(c['key'])
+                        st.rerun()
+
+        st.divider()
 
         if coppie_trovate:
             st.write(f"🔍 Trovate **{len(coppie_trovate)}** potenziali corrispondenze:")
