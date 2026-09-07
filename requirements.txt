@@ -4,3 +4,4 @@ pdfplumber
 supabase
 plotly
 openpyxl
+rapidfuzz
