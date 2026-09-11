@@ -319,7 +319,7 @@ def estrai_dati_pdf(pdf_file):
     return righe_estratte
 
 # ---------------------------------------------------------
-# CALCOLO ALGORITMO PREVISIONALE RIORDINI
+# CALCOLO ALGORITMO PREVISIONALE RIORDINI (MODIFICATO)
 # ---------------------------------------------------------
 def calcola_previsionale(df_ordini):
     if df_ordini.empty:
@@ -350,26 +350,38 @@ def calcola_previsionale(df_ordini):
         ultima_qta = g["QUANTITÀ"].iloc[-1]
         ultimo_prezzo = g["PREZZO"].iloc[-1]
 
-        # Calcola frequenza media di riordine in giorni
+        gg_trascorsi = (oggi - ultima_data).days
+
         if len(date_consegne) > 1:
             diffs = [(date_consegne[k] - date_consegne[k-1]).days for k in range(1, len(date_consegne))]
             intervallo_medio = sum(diffs) / len(diffs)
-            # Evitiamo intervalli troppo brevi dovuti a consegne frazionate
             intervallo_medio = max(intervallo_medio, 15)
         else:
-            intervallo_medio = 60 # Default a 60 giorni se c'è un solo ordine storico
+            intervallo_medio = 60
 
         data_stimata = ultima_data + timedelta(days=int(intervallo_medio))
-
-        # Verifica se esiste già un ordine futuro registrato nel DB
         ha_ordine_futuro = any(d >= oggi.replace(day=1) for d in date_consegne)
 
-        # Filtra se la data stimata cade nel Mese Corrente o nel Mese Successivo oppure è in Ritardo
         stesso_mese_corr = (data_stimata.month == mese_corrente and data_stimata.year == anno_corrente)
         stesso_mese_prox = (data_stimata.month == mese_prossimo and data_stimata.year == anno_prossimo)
         in_ritardo = (data_stimata < oggi and not ha_ordine_futuro)
 
-        if stesso_mese_corr or stesso_mese_prox or in_ritardo:
+        if gg_trascorsi > 365:
+            stato = "⚪ Articolo Declassato"
+            periodo_rif = "Inattivo (> 1 anno)"
+            previsioni.append({
+                "CLIENTE": cliente,
+                "ARTICOLO": articolo,
+                "STATO": stato,
+                "PERIODO ATTESO": periodo_rif,
+                "GG TRASCORSI": gg_trascorsi,
+                "DATA STIMATA RIORDINO": data_stimata.strftime("%d/%m/%Y"),
+                "FREQ. MEDIA (GG)": int(intervallo_medio),
+                "ULTIMA CONSEGNA": ultima_data.strftime("%d/%m/%Y"),
+                "ULTIMA Q.TÀ": ultima_qta,
+                "ULTIMO PREZZO": ultimo_prezzo
+            })
+        elif stesso_mese_corr or stesso_mese_prox or in_ritardo:
             if in_ritardo:
                 stato = "🔴 In Ritardo / Da Sollecitare"
                 periodo_rif = "Scaduto"
@@ -385,6 +397,7 @@ def calcola_previsionale(df_ordini):
                 "ARTICOLO": articolo,
                 "STATO": stato,
                 "PERIODO ATTESO": periodo_rif,
+                "GG TRASCORSI": gg_trascorsi,
                 "DATA STIMATA RIORDINO": data_stimata.strftime("%d/%m/%Y"),
                 "FREQ. MEDIA (GG)": int(intervallo_medio),
                 "ULTIMA CONSEGNA": ultima_data.strftime("%d/%m/%Y"),
@@ -895,11 +908,11 @@ with tab_fuzzy:
         st.warning("Database vuoto.")
 
 # =========================================================
-# SCHEDA 5: PREVISIONALE RIORDINI
+# SCHEDA 5: PREVISIONALE RIORDINI (MODIFICATO)
 # =========================================================
 with tab_previsionale:
     st.subheader("🔮 Previsionale Riordini (Mese Corrente & Successivo)")
-    st.markdown("L'algoritmo analizza la frequenza storica di riordine per ogni coppia **Cliente-Articolo** e ti segnala gli ordini previsti o in ritardo da sollecitare.")
+    st.markdown("L'algoritmo analizza la frequenza storica di riordine per ogni coppia **Cliente-Articolo**, i giorni trascorsi dall'ultimo ordine e ti segnala le commesse attese o in ritardo.")
 
     df_prev_base = st.session_state.db_ordini
 
@@ -907,7 +920,7 @@ with tab_previsionale:
         df_prev_res = calcola_previsionale(df_prev_base)
 
         if not df_prev_res.empty:
-            # Indicatori sintetici in alto
+            # Indicatori sintetici in alto (ESCLUSI gli articoli declassati)
             n_ritardo = len(df_prev_res[df_prev_res["STATO"].str.contains("Ritardo")])
             n_corr = len(df_prev_res[df_prev_res["STATO"].str.contains("Mese Corrente")])
             n_prox = len(df_prev_res[df_prev_res["STATO"].str.contains("Mese Successivo")])
@@ -919,16 +932,24 @@ with tab_previsionale:
 
             st.divider()
 
-            # Filtri di consultazione
-            col_pf1, col_pf2 = st.columns(2)
+            col_pf1, col_pf2, col_pf3 = st.columns([1.5, 1.5, 1])
 
-            stati_disponibili = ["Tutti"] + sorted(list(df_prev_res["STATO"].unique()))
+            # Checkbox per mostrare/nascondere gli articoli declassati nella tabella
+            mostra_declassati = col_pf3.checkbox("Includi '⚪ Articolo Declassato'", value=False, key="chk_show_decl")
+
+            # Filtriamo gli articoli declassati in base alla spunta
+            if not mostra_declassati:
+                df_prev_res_filtered = df_prev_res[~df_prev_res["STATO"].str.contains("Declassato")].copy()
+            else:
+                df_prev_res_filtered = df_prev_res.copy()
+
+            stati_disponibili = ["Tutti"] + sorted(list(df_prev_res_filtered["STATO"].unique()))
             sel_stato = col_pf1.selectbox("Filtra per STATO:", stati_disponibili, key="prev_stato_filter")
 
-            clienti_prev = ["Tutti"] + sorted(list(df_prev_res["CLIENTE"].unique()))
+            clienti_prev = ["Tutti"] + sorted(list(df_prev_res_filtered["CLIENTE"].unique()))
             sel_cli_p = col_pf2.selectbox("Filtra per CLIENTE:", clienti_prev, key="prev_cli_filter")
 
-            df_prev_disp = df_prev_res.copy()
+            df_prev_disp = df_prev_res_filtered.copy()
 
             if sel_stato != "Tutti":
                 df_prev_disp = df_prev_disp[df_prev_disp["STATO"] == sel_stato]
