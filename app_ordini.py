@@ -5,6 +5,8 @@ import re
 from datetime import datetime, timedelta
 from supabase import create_client, Client
 from rapidfuzz import process, fuzz
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 
 st.set_page_config(page_title="Gestionale Ordini Cloud", layout="wide")
 
@@ -19,6 +21,26 @@ def init_supabase() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 supabase = init_supabase()
+
+# ---------------------------------------------------------
+# CONNESSIONE GOOGLE CALENDAR API (VIA SERVICE ACCOUNT)
+# ---------------------------------------------------------
+SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
+
+@st.cache_resource
+def get_calendar_service():
+    try:
+        if "gcp_service_account" in st.secrets:
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+            service = build('calendar', 'v3', credentials=creds)
+            return service
+        else:
+            st.warning("Credenziali 'gcp_service_account' non trovate nei Secrets di Streamlit.")
+            return None
+    except Exception as e:
+        st.error(f"Errore di connessione a Google Calendar API: {e}")
+        return None
 
 # ---------------------------------------------------------
 # CARICAMENTO / SALVATAGGIO DATABASE CLOUD (PAGINATO)
@@ -319,7 +341,7 @@ def estrai_dati_pdf(pdf_file):
     return righe_estratte
 
 # ---------------------------------------------------------
-# CALCOLO ALGORITMO PREVISIONALE RIORDINI (MODIFICATO)
+# CALCOLO ALGORITMO PREVISIONALE RIORDINI
 # ---------------------------------------------------------
 def calcola_previsionale(df_ordini):
     if df_ordini.empty:
@@ -411,7 +433,100 @@ def calcola_previsionale(df_ordini):
     return df_prev
 
 # ---------------------------------------------------------
-# INTERFACCIA STREAMLIT A TABS (5 SCHEDE)
+# FUNZIONE DI ESTRAZIONE EVENTI DA GOOGLE CALENDAR
+# ---------------------------------------------------------
+def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
+    service = get_calendar_service()
+    if not service:
+        return pd.DataFrame()
+
+    try:
+        # Recupera eventi degli ultimi 365 giorni
+        time_min = (datetime.utcnow() - timedelta(days=365)).isoformat() + 'Z'
+        events_result = service.events().list(
+            calendarId='primary', 
+            timeMin=time_min,
+            maxResults=1000, 
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+        events = events_result.get('items', [])
+
+        visite_cliente = {}
+        oggi = datetime.now()
+
+        for event in events:
+            summary = event.get('summary', '')
+            if not summary:
+                continue
+
+            start = event['start'].get('dateTime', event['start'].get('date'))
+            try:
+                data_evento = datetime.fromisoformat(start.replace('Z', '+00:00')).replace(tzinfo=None)
+            except Exception:
+                continue
+
+            # Se la data è futura rispetto a oggi, la ignoriamo per il calcolo dell'ultima visita
+            if data_evento > oggi:
+                continue
+
+            cliente_abbinato = None
+
+            # 1. Controlla prima nelle mappature personalizzate/sinonimi
+            for parola_chiave, cliente_reale in mappa_custom.items():
+                if parola_chiave.lower() in summary.lower():
+                    cliente_abbinato = cliente_reale
+                    break
+
+            # 2. Se non abbinato, usa il Fuzzy Matching sui clienti del DB
+            if not cliente_abbinato and lista_clienti_db:
+                match, score, _ = process.extractOne(summary, lista_clienti_db, scorer=fuzz.partial_ratio)
+                if score >= 75:  # Soglia di affidabilità
+                    cliente_abbinato = match
+
+            # Se abbiamo trovato una corrispondenza con un cliente del DB
+            if cliente_abbinato:
+                if cliente_abbinato not in visite_cliente or data_evento > visite_cliente[cliente_abbinato]:
+                    visite_cliente[cliente_abbinato] = data_evento
+
+        # Costruisce la tabella finale per tutti i clienti del DB
+        risultati = []
+        for cliente in lista_clienti_db:
+            if cliente in visite_cliente:
+                u_visita = visite_cliente[cliente]
+                gg_trascorsi = (oggi - u_visita).days
+                str_visita = u_visita.strftime("%d/%m/%Y")
+            else:
+                gg_trascorsi = 999
+                str_visita = "Mai trovata"
+
+            if gg_trascorsi <= 30:
+                stato_visita = "🟢 Recente (< 30 gg)"
+            elif gg_trascorsi <= 60:
+                stato_visita = "🟡 Programmare (30-60 gg)"
+            elif gg_trascorsi < 999:
+                stato_visita = "🔴 Urgente (> 60 gg)"
+            else:
+                stato_visita = "⚪ Nessuna Visita a Calendario"
+
+            risultati.append({
+                "CLIENTE": cliente,
+                "DATA ULTIMA VISITA": str_visita,
+                "GG DALL'ULTIMA VISITA": gg_trascorsi if gg_trascorsi != 999 else "N/D",
+                "STATO VISITA": stato_visita
+            })
+
+        df_res = pd.DataFrame(risultati)
+        if not df_res.empty:
+            df_res = df_res.sort_values(by=["STATO VISITA", "CLIENTE"])
+        return df_res
+
+    except Exception as e:
+        st.error(f"Errore nella lettura del Google Calendar: {e}")
+        return pd.DataFrame()
+
+# ---------------------------------------------------------
+# INTERFACCIA STREAMLIT A TABS (6 SCHEDE)
 # ---------------------------------------------------------
 st.title("📦 Gestionale Ordini PDF (Cloud Supabase)")
 
@@ -427,12 +542,16 @@ if "select_all_state" not in st.session_state:
 if "coppie_ignorate_list" not in st.session_state:
     st.session_state.coppie_ignorate_list = carica_coppie_ignorate_cloud()
 
-tab_database, tab_grafici, tab_norm_cli, tab_fuzzy, tab_previsionale = st.tabs([
+if "mappa_custom_calendar" not in st.session_state:
+    st.session_state.mappa_custom_calendar = {}
+
+tab_database, tab_grafici, tab_norm_cli, tab_fuzzy, tab_previsionale, tab_visite = st.tabs([
     "📋 Database Ordini", 
     "📈 Analisi & Grafici", 
     "🏷️ Normalizzazione Cliente",
     "🤖 Pulizia Smart (Fuzzy)",
-    "🔮 Previsionale Riordini"
+    "🔮 Previsionale Riordini",
+    "📅 Monitoraggio Visite"
 ])
 
 # =========================================================
@@ -908,7 +1027,7 @@ with tab_fuzzy:
         st.warning("Database vuoto.")
 
 # =========================================================
-# SCHEDA 5: PREVISIONALE RIORDINI (MODIFICATO)
+# SCHEDA 5: PREVISIONALE RIORDINI
 # =========================================================
 with tab_previsionale:
     st.subheader("🔮 Previsionale Riordini (Mese Corrente & Successivo)")
@@ -920,7 +1039,6 @@ with tab_previsionale:
         df_prev_res = calcola_previsionale(df_prev_base)
 
         if not df_prev_res.empty:
-            # Indicatori sintetici in alto (ESCLUSI gli articoli declassati)
             n_ritardo = len(df_prev_res[df_prev_res["STATO"].str.contains("Ritardo")])
             n_corr = len(df_prev_res[df_prev_res["STATO"].str.contains("Mese Corrente")])
             n_prox = len(df_prev_res[df_prev_res["STATO"].str.contains("Mese Successivo")])
@@ -934,10 +1052,8 @@ with tab_previsionale:
 
             col_pf1, col_pf2, col_pf3 = st.columns([1.5, 1.5, 1])
 
-            # Checkbox per mostrare/nascondere gli articoli declassati nella tabella
             mostra_declassati = col_pf3.checkbox("Includi '⚪ Articolo Declassato'", value=False, key="chk_show_decl")
 
-            # Filtriamo gli articoli declassati in base alla spunta
             if not mostra_declassati:
                 df_prev_res_filtered = df_prev_res[~df_prev_res["STATO"].str.contains("Declassato")].copy()
             else:
@@ -968,3 +1084,84 @@ with tab_previsionale:
             st.info("Nessuna previsione di riordine calcolata per il periodo attuale.")
     else:
         st.warning("Database vuoto. Carica dei PDF per generare il previsionale.")
+
+# =========================================================
+# SCHEDA 6: MONITORAGGIO VISITE GOOGLE CALENDAR
+# =========================================================
+with tab_visite:
+    st.subheader("📅 Monitoraggio Visite Clienti (Google Calendar)")
+    st.markdown("Il sistema scansiona in sola lettura il tuo **Google Calendar**, riconosce i titoli degli eventi associandoli ai clienti del database e calcola da quanti giorni non li visiti.")
+
+    df_vis_base = st.session_state.db_ordini
+
+    if not df_vis_base.empty:
+        list_cli_db = sorted([x for x in df_vis_base["CLIENTE"].unique() if str(x).strip()])
+
+        col_v1, col_v2 = st.columns([3, 1])
+
+        with col_v2:
+            st.write("")
+            btn_scan_cal = st.button("🔄 Scansiona Google Calendar", type="primary", key="btn_scan_cal")
+
+        if btn_scan_cal or "df_visite_cache" not in st.session_state:
+            with st.spinner("Scansione di Google Calendar in corso..."):
+                df_vis_res = ottieni_visite_calendar(list_cli_db, st.session_state.mappa_custom_calendar)
+                st.session_state.df_visite_cache = df_vis_res
+
+        df_vis_display = st.session_state.get("df_visite_cache", pd.DataFrame())
+
+        if not df_vis_display.empty:
+            n_rec = len(df_vis_display[df_vis_display["STATO VISITA"].str.contains("Recente")])
+            n_prog = len(df_vis_display[df_vis_display["STATO VISITA"].str.contains("Programmare")])
+            n_urg = len(df_vis_display[df_vis_display["STATO VISITA"].str.contains("Urgente")])
+
+            v_m1, v_m2, v_m3 = st.columns(3)
+            v_m1.metric("🟢 Visitati (< 30 gg)", n_rec)
+            v_m2.metric("🟡 Da Programmare (30-60 gg)", n_prog)
+            v_m3.metric("🔴 Visita Urgente (> 60 gg)", n_urg)
+
+            st.divider()
+
+            # Filtro stato visita
+            col_vf1, col_vf2 = st.columns(2)
+            stati_v = ["Tutti"] + sorted(list(df_vis_display["STATO VISITA"].unique()))
+            sel_st_v = col_vf1.selectbox("Filtra per STATO VISITA:", stati_v, key="vf_stato")
+            
+            sel_cli_v = col_vf2.selectbox("Filtra per CLIENTE:", ["Tutti"] + list_cli_db, key="vf_cli")
+
+            df_vis_filt = df_vis_display.copy()
+            if sel_st_v != "Tutti":
+                df_vis_filt = df_vis_filt[df_vis_filt["STATO VISITA"] == sel_st_v]
+            if sel_cli_v != "Tutti":
+                df_vis_filt = df_vis_filt[df_vis_filt["CLIENTE"] == sel_cli_v]
+
+            st.dataframe(
+                df_vis_filt,
+                use_container_width=True,
+                hide_index=True
+            )
+
+            st.divider()
+
+            # Sezione Mappatura Manuale / Sinonimi
+            with st.expander("🔗 Mappatura Manuale / Sinonimi Titoli Calendar"):
+                st.caption("Se su Google Calendar scrivi nomi abbreviati (es. 'MARTIGNONI' invece del nome completo), puoi associare qui la parola chiave alla ragione sociale esatta.")
+                
+                c_map1, c_map2, c_map3 = st.columns([2, 2, 1])
+                txt_keyword = c_map1.text_input("Parola chiave in Calendar (es. MARTIGNONI):", key="txt_kw_cal")
+                sel_cli_map = c_map2.selectbox("Cliente Corrispondente nel DB:", ["-- Seleziona --"] + list_cli_db, key="sel_cli_map")
+
+                if c_map3.button("➕ Aggiungi Regola", key="btn_add_map"):
+                    if txt_keyword.strip() and sel_cli_map != "-- Seleziona --":
+                        st.session_state.mappa_custom_calendar[txt_keyword.strip()] = sel_cli_map
+                        st.success(f"Regola aggiunta: '{txt_keyword.strip()}' -> '{sel_cli_map}'")
+                        st.rerun()
+
+                if st.session_state.mappa_custom_calendar:
+                    st.write("📋 Regole di abbinamento attive:")
+                    for kw, cl in list(st.session_state.mappa_custom_calendar.items()):
+                        st.text(f"• '{kw}' ➔ '{cl}'")
+        else:
+            st.info("Fai clic su 'Scansiona Google Calendar' per caricare i dati delle visite.")
+    else:
+        st.warning("Database vuoto. Carica dei PDF per sincronizzare le visite.")
