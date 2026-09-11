@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import pdfplumber
 import re
+from datetime import datetime, timedelta
 from supabase import create_client, Client
 from rapidfuzz import process, fuzz
 
@@ -148,9 +149,6 @@ def estrai_dati_pdf(pdf_file):
         testo_layout = page.extract_text(layout=True) or ""
         testo_semplice = page.extract_text(layout=False) or ""
 
-    # =========================================================
-    # CASE 1: NUOVA GRAFICA INNOVA GROUP (BORGO SAN GIACOMO)
-    # =========================================================
     if "BORGO SAN GIACOMO" in testo_semplice or "N° Ord. Cliente" in testo_semplice or "N Ord. Cliente" in testo_semplice:
         m_cli = re.search(r"Spett\.le\s*\n\s*([^\n]+)", testo_semplice)
         cliente = m_cli.group(1).strip() if m_cli else ""
@@ -237,9 +235,6 @@ def estrai_dati_pdf(pdf_file):
                         "PREZZO": prezzo
                     })
 
-    # =========================================================
-    # CASE 2: VECCHIA GRAFICA (ALGORITMO CLASSICO INVARIATO)
-    # =========================================================
     else:
         m_cliente = re.search(r"Spett\.le\s*\n\s*([^\n]+)", testo_semplice)
         cliente = m_cliente.group(1).strip() if m_cliente else ""
@@ -324,7 +319,86 @@ def estrai_dati_pdf(pdf_file):
     return righe_estratte
 
 # ---------------------------------------------------------
-# INTERFACCIA STREAMLIT A TABS (4 SCHEDE)
+# CALCOLO ALGORITMO PREVISIONALE RIORDINI
+# ---------------------------------------------------------
+def calcola_previsionale(df_ordini):
+    if df_ordini.empty:
+        return pd.DataFrame()
+
+    df = df_ordini.copy()
+    df["DATA_DT"] = pd.to_datetime(df["CONSEGNA"], format="%d/%m/%Y", errors="coerce")
+    df = df.dropna(subset=["DATA_DT"]).sort_values(["CLIENTE", "ARTICOLO", "DATA_DT"])
+
+    oggi = datetime.now()
+    mese_corrente = oggi.month
+    anno_corrente = oggi.year
+    
+    prossimo_mese_dt = (oggi.replace(day=1) + timedelta(days=32)).replace(day=1)
+    mese_prossimo = prossimo_mese_dt.month
+    anno_prossimo = prossimo_mese_dt.year
+
+    previsioni = []
+
+    gruppi = df.groupby(["CLIENTE", "ARTICOLO"])
+
+    for (cliente, articolo), g in gruppi:
+        if len(g) == 0:
+            continue
+
+        date_consegne = g["DATA_DT"].tolist()
+        ultima_data = date_consegne[-1]
+        ultima_qta = g["QUANTITÀ"].iloc[-1]
+        ultimo_prezzo = g["PREZZO"].iloc[-1]
+
+        # Calcola frequenza media di riordine in giorni
+        if len(date_consegne) > 1:
+            diffs = [(date_consegne[k] - date_consegne[k-1]).days for k in range(1, len(date_consegne))]
+            intervallo_medio = sum(diffs) / len(diffs)
+            # Evitiamo intervalli troppo brevi dovuti a consegne frazionate
+            intervallo_medio = max(intervallo_medio, 15)
+        else:
+            intervallo_medio = 60 # Default a 60 giorni se c'è un solo ordine storico
+
+        data_stimata = ultima_data + timedelta(days=int(intervallo_medio))
+
+        # Verifica se esiste già un ordine futuro registrato nel DB
+        ha_ordine_futuro = any(d >= oggi.replace(day=1) for d in date_consegne)
+
+        # Filtra se la data stimata cade nel Mese Corrente o nel Mese Successivo oppure è in Ritardo
+        stesso_mese_corr = (data_stimata.month == mese_corrente and data_stimata.year == anno_corrente)
+        stesso_mese_prox = (data_stimata.month == mese_prossimo and data_stimata.year == anno_prossimo)
+        in_ritardo = (data_stimata < oggi and not ha_ordine_futuro)
+
+        if stesso_mese_corr or stesso_mese_prox or in_ritardo:
+            if in_ritardo:
+                stato = "🔴 In Ritardo / Da Sollecitare"
+                periodo_rif = "Scaduto"
+            elif stesso_mese_corr:
+                stato = "🟢 Già Ordinato" if ha_ordine_futuro else "🟡 Mese Corrente"
+                periodo_rif = "Mese Corrente"
+            else:
+                stato = "🟢 Già Ordinato" if ha_ordine_futuro else "🔵 Mese Successivo"
+                periodo_rif = "Mese Successivo"
+
+            previsioni.append({
+                "CLIENTE": cliente,
+                "ARTICOLO": articolo,
+                "STATO": stato,
+                "PERIODO ATTESO": periodo_rif,
+                "DATA STIMATA RIORDINO": data_stimata.strftime("%d/%m/%Y"),
+                "FREQ. MEDIA (GG)": int(intervallo_medio),
+                "ULTIMA CONSEGNA": ultima_data.strftime("%d/%m/%Y"),
+                "ULTIMA Q.TÀ": ultima_qta,
+                "ULTIMO PREZZO": ultimo_prezzo
+            })
+
+    df_prev = pd.DataFrame(previsioni)
+    if not df_prev.empty:
+        df_prev = df_prev.sort_values(by=["STATO", "DATA STIMATA RIORDINO"])
+    return df_prev
+
+# ---------------------------------------------------------
+# INTERFACCIA STREAMLIT A TABS (5 SCHEDE)
 # ---------------------------------------------------------
 st.title("📦 Gestionale Ordini PDF (Cloud Supabase)")
 
@@ -340,11 +414,12 @@ if "select_all_state" not in st.session_state:
 if "coppie_ignorate_list" not in st.session_state:
     st.session_state.coppie_ignorate_list = carica_coppie_ignorate_cloud()
 
-tab_database, tab_grafici, tab_norm_cli, tab_fuzzy = st.tabs([
+tab_database, tab_grafici, tab_norm_cli, tab_fuzzy, tab_previsionale = st.tabs([
     "📋 Database Ordini", 
     "📈 Analisi & Grafici", 
     "🏷️ Normalizzazione Cliente",
-    "🤖 Pulizia Smart (Fuzzy)"
+    "🤖 Pulizia Smart (Fuzzy)",
+    "🔮 Previsionale Riordini"
 ])
 
 # =========================================================
@@ -818,3 +893,57 @@ with tab_fuzzy:
             st.success("Nessun duplicato trovato con la percentuale di somiglianza impostata.")
     else:
         st.warning("Database vuoto.")
+
+# =========================================================
+# SCHEDA 5: PREVISIONALE RIORDINI
+# =========================================================
+with tab_previsionale:
+    st.subheader("🔮 Previsionale Riordini (Mese Corrente & Successivo)")
+    st.markdown("L'algoritmo analizza la frequenza storica di riordine per ogni coppia **Cliente-Articolo** e ti segnala gli ordini previsti o in ritardo da sollecitare.")
+
+    df_prev_base = st.session_state.db_ordini
+
+    if not df_prev_base.empty:
+        df_prev_res = calcola_previsionale(df_prev_base)
+
+        if not df_prev_res.empty:
+            # Indicatori sintetici in alto
+            n_ritardo = len(df_prev_res[df_prev_res["STATO"].str.contains("Ritardo")])
+            n_corr = len(df_prev_res[df_prev_res["STATO"].str.contains("Mese Corrente")])
+            n_prox = len(df_prev_res[df_prev_res["STATO"].str.contains("Mese Successivo")])
+
+            m1, m2, m3 = st.columns(3)
+            m1.metric("🔴 In Ritardo (Da Sollecitare)", n_ritardo)
+            m2.metric("🟡 Previsti Questo Mese", n_corr)
+            m3.metric("🔵 Previsti Mese Successivo", n_prox)
+
+            st.divider()
+
+            # Filtri di consultazione
+            col_pf1, col_pf2 = st.columns(2)
+
+            stati_disponibili = ["Tutti"] + sorted(list(df_prev_res["STATO"].unique()))
+            sel_stato = col_pf1.selectbox("Filtra per STATO:", stati_disponibili, key="prev_stato_filter")
+
+            clienti_prev = ["Tutti"] + sorted(list(df_prev_res["CLIENTE"].unique()))
+            sel_cli_p = col_pf2.selectbox("Filtra per CLIENTE:", clienti_prev, key="prev_cli_filter")
+
+            df_prev_disp = df_prev_res.copy()
+
+            if sel_stato != "Tutti":
+                df_prev_disp = df_prev_disp[df_prev_disp["STATO"] == sel_stato]
+
+            if sel_cli_p != "Tutti":
+                df_prev_disp = df_prev_disp[df_prev_disp["CLIENTE"] == sel_cli_p]
+
+            st.caption(f"Righe trovate: **{len(df_prev_disp)}**")
+
+            st.dataframe(
+                df_prev_disp,
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.info("Nessuna previsione di riordine calcolata per il periodo attuale.")
+    else:
+        st.warning("Database vuoto. Carica dei PDF per generare il previsionale.")
