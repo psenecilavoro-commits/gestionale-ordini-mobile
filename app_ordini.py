@@ -433,7 +433,7 @@ def calcola_previsionale(df_ordini):
     return df_prev
 
 # ---------------------------------------------------------
-# ESTRAZIONE EVENTI GOOGLE CALENDAR MULTI-CALENDARIO
+# ESTRAZIONE EVENTI GOOGLE CALENDAR (ID DIRETTI)
 # ---------------------------------------------------------
 def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
     service = get_calendar_service()
@@ -441,11 +441,20 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
         return pd.DataFrame()
 
     try:
-        calendar_list = service.calendarList().list().execute().get('items', [])
+        # ID specifici dei calendari da analizzare
+        CALENDAR_IDS = [
+            'primary',
+            'pseneci.lavoro@gmail.com'
+        ]
         
-        if not calendar_list:
-            st.warning("⚠️ La Service Account non legge nessun calendario. Condividi il calendario 'Innova Group' o 'Emilabel' con l'email del bot.")
-            return pd.DataFrame()
+        # Recupera anche tutti gli altri calendari eventualmente accessibili
+        try:
+            cal_list_res = service.calendarList().list().execute().get('items', [])
+            for c in cal_list_res:
+                if c['id'] not in CALENDAR_IDS:
+                    CALENDAR_IDS.append(c['id'])
+        except Exception:
+            pass
 
         oggi = datetime.now()
         time_min = (oggi - timedelta(days=365)).isoformat() + 'Z'
@@ -461,18 +470,18 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
         clienti_db_clean = {c: pulisci_testo(c) for c in lista_clienti_db if str(c).strip()}
         eventi_letti_debug = []
 
-        for cal in calendar_list:
-            cal_id = cal['id']
-            cal_summary = cal.get('summary', 'Senza nome')
-
-            events_result = service.events().list(
-                calendarId=cal_id, 
-                timeMin=time_min,
-                maxResults=2500, 
-                singleEvents=True,
-                orderBy='startTime'
-            ).execute()
-            events = events_result.get('items', [])
+        for cal_id in CALENDAR_IDS:
+            try:
+                events_result = service.events().list(
+                    calendarId=cal_id, 
+                    timeMin=time_min,
+                    maxResults=2500, 
+                    singleEvents=True,
+                    orderBy='startTime'
+                ).execute()
+                events = events_result.get('items', [])
+            except Exception:
+                continue
 
             for event in events:
                 summary = event.get('summary', '')
@@ -489,11 +498,11 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
                 if data_evento > oggi:
                     continue
 
-                eventi_letti_debug.append(f"[{cal_summary}] {data_evento.strftime('%d/%m/%Y')} - {summary}")
+                eventi_letti_debug.append(f"[{cal_id[:12]}...] {data_evento.strftime('%d/%m/%Y')} - {summary}")
 
                 cliente_abbinato = None
 
-                # 1. Regole manuali
+                # 1. Regole manuali / sinonimi
                 for parola_chiave, cliente_reale in mappa_custom.items():
                     if parola_chiave.lower() in summary.lower():
                         cliente_abbinato = cliente_reale
@@ -518,11 +527,13 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
                     if cliente_abbinato not in visite_cliente or data_evento > visite_cliente[cliente_abbinato]:
                         visite_cliente[cliente_abbinato] = data_evento
 
-        with st.expander("🔍 Log Debug: Calendari ed Eventi letti"):
-            st.write(f"Calendari trovati ({len(calendar_list)}):", [c.get('summary') for c in calendar_list])
+        with st.expander("🔍 Log Debug: Eventi letti"):
             st.write(f"Totale eventi analizzati: {len(eventi_letti_debug)}")
-            st.caption("Ultimi 20 eventi letti:")
-            st.code("\n".join(eventi_letti_debug[-20:]))
+            if eventi_letti_debug:
+                st.caption("Ultimi eventi letti:")
+                st.code("\n".join(eventi_letti_debug[-30:]))
+            else:
+                st.info("Nessun evento estratto dai calendari specificati.")
 
         risultati = []
         for cliente in lista_clienti_db:
