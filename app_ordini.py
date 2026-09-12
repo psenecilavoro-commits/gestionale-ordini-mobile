@@ -433,7 +433,7 @@ def calcola_previsionale(df_ordini):
     return df_prev
 
 # ---------------------------------------------------------
-# ESTRAZIONE EVENTI GOOGLE CALENDAR (ID DIRETTI)
+# ESTRAZIONE EVENTI GOOGLE CALENDAR (CON GESTIONE FUTURE)
 # ---------------------------------------------------------
 def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
     service = get_calendar_service()
@@ -441,13 +441,11 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
         return pd.DataFrame()
 
     try:
-        # ID specifici dei calendari da analizzare
         CALENDAR_IDS = [
             'primary',
             'pseneci.lavoro@gmail.com'
         ]
         
-        # Recupera anche tutti gli altri calendari eventualmente accessibili
         try:
             cal_list_res = service.calendarList().list().execute().get('items', [])
             for c in cal_list_res:
@@ -457,8 +455,12 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
             pass
 
         oggi = datetime.now()
+        # Legge eventi da 365 giorni fa fino a 90 giorni nel futuro
         time_min = (oggi - timedelta(days=365)).isoformat() + 'Z'
-        visite_cliente = {}
+        time_max = (oggi + timedelta(days=90)).isoformat() + 'Z'
+        
+        visite_passate = {}
+        visite_future = {}
 
         def pulisci_testo(t):
             if not t:
@@ -475,6 +477,7 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
                 events_result = service.events().list(
                     calendarId=cal_id, 
                     timeMin=time_min,
+                    timeMax=time_max,
                     maxResults=2500, 
                     singleEvents=True,
                     orderBy='startTime'
@@ -495,14 +498,11 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
                 except Exception:
                     continue
 
-                if data_evento > oggi:
-                    continue
-
                 eventi_letti_debug.append(f"[{cal_id[:12]}...] {data_evento.strftime('%d/%m/%Y')} - {summary}")
 
                 cliente_abbinato = None
 
-                # 1. Regole manuali / sinonimi
+                # 1. Regole manuali
                 for parola_chiave, cliente_reale in mappa_custom.items():
                     if parola_chiave.lower() in summary.lower():
                         cliente_abbinato = cliente_reale
@@ -524,8 +524,14 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
                                 break
 
                 if cliente_abbinato:
-                    if cliente_abbinato not in visite_cliente or data_evento > visite_cliente[cliente_abbinato]:
-                        visite_cliente[cliente_abbinato] = data_evento
+                    if data_evento > oggi:
+                        # Evento futuro: teniamo la data più vicina ad oggi
+                        if cliente_abbinato not in visite_future or data_evento < visite_future[cliente_abbinato]:
+                            visite_future[cliente_abbinato] = data_evento
+                    else:
+                        # Evento passato: teniamo l'ultima data disponibile
+                        if cliente_abbinato not in visite_passate or data_evento > visite_passate[cliente_abbinato]:
+                            visite_passate[cliente_abbinato] = data_evento
 
         with st.expander("🔍 Log Debug: Eventi letti"):
             st.write(f"Totale eventi analizzati: {len(eventi_letti_debug)}")
@@ -537,27 +543,36 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
 
         risultati = []
         for cliente in lista_clienti_db:
-            if cliente in visite_cliente:
-                u_visita = visite_cliente[cliente]
+            ha_futura = cliente in visite_future
+            ha_passata = cliente in visite_passate
+
+            if ha_futura:
+                u_visita = visite_future[cliente]
+                gg_futuri = (u_visita - oggi).days + 1
+                str_visita = u_visita.strftime("%d/%m/%Y")
+                str_gg = f"-{gg_futuri}"
+                stato_visita = f"🔵 Programmata (tra {gg_futuri} gg)"
+            elif ha_passata:
+                u_visita = visite_passate[cliente]
                 gg_trascorsi = (oggi - u_visita).days
                 str_visita = u_visita.strftime("%d/%m/%Y")
+                str_gg = str(gg_trascorsi)
+                
+                if gg_trascorsi <= 30:
+                    stato_visita = "🟢 Recente (< 30 gg)"
+                elif gg_trascorsi <= 60:
+                    stato_visita = "🟡 Programmare (30-60 gg)"
+                else:
+                    stato_visita = "🔴 Urgente (> 60 gg)"
             else:
-                gg_trascorsi = 999
                 str_visita = "Mai trovata"
-
-            if gg_trascorsi <= 30:
-                stato_visita = "🟢 Recente (< 30 gg)"
-            elif gg_trascorsi <= 60:
-                stato_visita = "🟡 Programmare (30-60 gg)"
-            elif gg_trascorsi < 999:
-                stato_visita = "🔴 Urgente (> 60 gg)"
-            else:
+                str_gg = "N/D"
                 stato_visita = "⚪ Nessuna Visita a Calendario"
 
             risultati.append({
                 "CLIENTE": cliente,
                 "DATA ULTIMA VISITA": str_visita,
-                "GG DALL'ULTIMA VISITA": gg_trascorsi if gg_trascorsi != 999 else "N/D",
+                "GG DALL'ULTIMA VISITA": str_gg,
                 "STATO VISITA": stato_visita
             })
 
@@ -1135,7 +1150,7 @@ with tab_previsionale:
 # =========================================================
 with tab_visite:
     st.subheader("📅 Monitoraggio Visite Clienti (Google Calendar)")
-    st.markdown("Il sistema scansiona in sola lettura il tuo **Google Calendar**, riconosce i titoli degli eventi associandoli ai clienti del database e calcola da quanti giorni non li visiti.")
+    st.markdown("Il sistema scansiona in sola lettura il tuo **Google Calendar**, riconosce i titoli degli eventi associandoli ai clienti del database e calcola da quanti giorni non li visiti (o tra quanti li visiterai).")
 
     df_vis_base = st.session_state.db_ordini
 
@@ -1156,13 +1171,15 @@ with tab_visite:
         df_vis_display = st.session_state.get("df_visite_cache", pd.DataFrame())
 
         if not df_vis_display.empty:
+            n_prog = len(df_vis_display[df_vis_display["STATO VISITA"].str.contains("Programmata")])
             n_rec = len(df_vis_display[df_vis_display["STATO VISITA"].str.contains("Recente")])
-            n_prog = len(df_vis_display[df_vis_display["STATO VISITA"].str.contains("Programmare")])
+            n_prog_std = len(df_vis_display[df_vis_display["STATO VISITA"].str.contains("Programmare")])
             n_urg = len(df_vis_display[df_vis_display["STATO VISITA"].str.contains("Urgente")])
 
-            v_m1, v_m2, v_m3 = st.columns(3)
+            v_m0, v_m1, v_m2, v_m3 = st.columns(4)
+            v_m0.metric("🔵 Visita Programmata", n_prog)
             v_m1.metric("🟢 Visitati (< 30 gg)", n_rec)
-            v_m2.metric("🟡 Da Programmare (30-60 gg)", n_prog)
+            v_m2.metric("🟡 Da Programmare (30-60 gg)", n_prog_std)
             v_m3.metric("🔴 Visita Urgente (> 60 gg)", n_urg)
 
             st.divider()
