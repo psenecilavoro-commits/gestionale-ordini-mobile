@@ -11,14 +11,50 @@ from googleapiclient.discovery import build
 st.set_page_config(page_title="Gestionale Ordini Cloud", layout="wide")
 
 # ---------------------------------------------------------
+# SISTEMA DI AUTENTICAZIONE PASSWORD
+# ---------------------------------------------------------
+APP_PASSWORD = "Cyclamen91!"
+
+def verifica_password():
+    if "autenticato" not in st.session_state:
+        st.session_state.autenticato = False
+
+    if not st.session_state.autenticato:
+        st.title("🔒 Accesso Riservato")
+        st.subheader("Gestionale Ordini & Monitoraggio Visite")
+        
+        pwd_input = st.text_input("Inserisci la password di accesso:", type="password", key="login_pwd_input")
+        btn_login = st.button("Accedi", type="primary")
+
+        if btn_login:
+            if pwd_input == APP_PASSWORD:
+                st.session_state.autenticato = True
+                st.success("Accesso effettuato!")
+                st.rerun()
+            else:
+                st.error("Password errata. Riprova.")
+        return False
+    return True
+
+if not verifica_password():
+    st.stop()
+
+# ---------------------------------------------------------
 # CONFIGURAZIONE CONNESSIONE SUPABASE CLOUD
 # ---------------------------------------------------------
-SUPABASE_URL = "https://azmyqrcxfnimwrhpyhsv.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF6bXlxcmN4Zm5pbXdyaHB5aHN2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg1OTAxNjEsImV4cCI6MjEwNDE2NjE2MX0.sFf3_axQg6uOqWCQJcfvWGbebDwrVGngIyA0jPZqjz4"
-
 @st.cache_resource
 def init_supabase() -> Client:
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+    try:
+        if "supabase" in st.secrets:
+            url = st.secrets["supabase"]["url"]
+            key = st.secrets["supabase"]["key"]
+        else:
+            url = "https://azmyqrcxfnimwrhpyhsv.supabase.co"
+            key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF6bXlxcmN4Zm5pbXdyaHB5aHN2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg1OTAxNjEsImV4cCI6MjEwNDE2NjE2MX0.sFf3_axQg6uOqWCQJcfvWGbebDwrVGngIyA0jPZqjz4"
+        return create_client(url, key)
+    except Exception as e:
+        st.error(f"Errore di connessione a Supabase: {e}")
+        return None
 
 supabase = init_supabase()
 
@@ -657,7 +693,14 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
 # ---------------------------------------------------------
 # INTERFACCIA STREAMLIT A TABS (6 SCHEDE)
 # ---------------------------------------------------------
-st.title("📦 Gestionale Ordini PDF (Cloud Supabase)")
+col_h1, col_h2 = st.columns([5, 1])
+with col_h1:
+    st.title("📦 Gestionale Ordini PDF (Cloud Supabase)")
+with col_h2:
+    st.write("")
+    if st.button("🔒 Disconnetti"):
+        st.session_state.autenticato = False
+        st.rerun()
 
 if "db_ordini" not in st.session_state:
     st.session_state.db_ordini = carica_db_cloud()
@@ -1180,7 +1223,6 @@ with tab_previsionale:
         df_prev_res = calcola_previsionale(df_prev_base)
 
         if not df_prev_res.empty:
-            # Filtro per escludere gli articoli ignorati dall'utente
             set_prev_ignorati = set(st.session_state.articoli_ignorati_prev_list)
             if set_prev_ignorati:
                 df_prev_res["_key"] = list(zip(df_prev_res["CLIENTE"], df_prev_res["ARTICOLO"]))
@@ -1222,7 +1264,6 @@ with tab_previsionale:
 
             st.caption(f"Righe trovate: **{len(df_prev_disp)}**")
 
-            # Tabella interattiva con checkbox
             df_prev_edit = df_prev_disp.copy()
             df_prev_edit.insert(0, "Seleziona", st.session_state.select_all_prev_state)
 
@@ -1233,7 +1274,6 @@ with tab_previsionale:
                 key="editor_previsionale"
             )
 
-            # Pulsanti di azione per il Previsionale
             col_p_sel1, col_p_sel2, col_p_ign = st.columns([1.5, 1.5, 3])
 
             with col_p_sel1:
@@ -1263,7 +1303,6 @@ with tab_previsionale:
 
             st.divider()
 
-            # Pannello di Ripristino Previsionale
             if st.session_state.articoli_ignorati_prev_list:
                 with st.expander(f"👁️ Gestisci Articoli Esclusi dal Previsionale ({len(st.session_state.articoli_ignorati_prev_list)})"):
                     st.caption("Elenco delle coppie Cliente - Articolo attualmente escluse dal previsionale:")
@@ -1275,7 +1314,6 @@ with tab_previsionale:
                     
                     if c_prst2.button("↩️ Ripristina Selezionato", key="btn_rst_single_prev"):
                         if scelta_rst_prev != "-- Seleziona --":
-                            # Ricava cliente e articolo dividendo la stringa
                             cli_rst, art_rst = scelta_rst_prev.split(" ➔ ", 1)
                             if rimuovi_articolo_ignorato_prev_cloud(cli_rst, art_rst):
                                 st.session_state.articoli_ignorati_prev_list = carica_articoli_ignorati_prev_cloud()
@@ -1305,7 +1343,6 @@ with tab_visite:
         list_cli_db_tutti = sorted([x for x in df_vis_base["CLIENTE"].unique() if str(x).strip()])
         set_cli_ignorati = set(st.session_state.clienti_ignorati_visite_list)
         
-        # Esclude i clienti contrassegnati come ignorati
         list_cli_db = [c for c in list_cli_db_tutti if c not in set_cli_ignorati]
 
         col_v1, col_v2 = st.columns([3, 1])
@@ -1349,7 +1386,6 @@ with tab_visite:
             if sel_cli_v != "Tutti":
                 df_vis_filt = df_vis_filt[df_vis_filt["CLIENTE"] == sel_cli_v]
 
-            # Inseriamo la colonna checkbox 'Seleziona'
             df_vis_edit = df_vis_filt.copy()
             df_vis_edit.insert(0, "Seleziona", st.session_state.select_all_visite_state)
 
@@ -1360,7 +1396,6 @@ with tab_visite:
                 key="editor_visite"
             )
 
-            # Pulsanti Seleziona / Deseleziona / Ignora
             col_v_sel1, col_v_sel2, col_v_ign = st.columns([1.5, 1.5, 3])
 
             with col_v_sel1:
@@ -1390,7 +1425,6 @@ with tab_visite:
 
             st.divider()
 
-            # Gestione e Ripristino dei Clienti Ignorati
             if st.session_state.clienti_ignorati_visite_list:
                 with st.expander(f"👁️ Gestisci Clienti Esclusi ({len(st.session_state.clienti_ignorati_visite_list)})"):
                     st.caption("Elenco dei clienti attualmente esclusi dal monitoraggio delle visite:")
@@ -1413,7 +1447,6 @@ with tab_visite:
                             st.success("Tutti i clienti sono stati ripristinati con successo!")
                             st.rerun()
 
-            # Sezione Mappatura Manuale / Sinonimi
             with st.expander("🔗 Mappatura Manuale / Sinonimi Titoli Calendar"):
                 st.caption("Se su Google Calendar scrivi nomi abbreviati (es. 'MARTIGNONI' invece del nome completo), puoi associare qui la parola chiave alla ragione sociale esatta.")
                 
