@@ -433,7 +433,7 @@ def calcola_previsionale(df_ordini):
     return df_prev
 
 # ---------------------------------------------------------
-# ESTRAZIONE EVENTI GOOGLE CALENDAR (CON GESTIONE FUTURE)
+# ESTRAZIONE EVENTI GOOGLE CALENDAR (STATO UNIFICATO)
 # ---------------------------------------------------------
 def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
     service = get_calendar_service()
@@ -455,7 +455,6 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
             pass
 
         oggi = datetime.now()
-        # Legge eventi da 365 giorni fa fino a 90 giorni nel futuro
         time_min = (oggi - timedelta(days=365)).isoformat() + 'Z'
         time_max = (oggi + timedelta(days=90)).isoformat() + 'Z'
         
@@ -525,11 +524,9 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
 
                 if cliente_abbinato:
                     if data_evento > oggi:
-                        # Evento futuro: teniamo la data più vicina ad oggi
                         if cliente_abbinato not in visite_future or data_evento < visite_future[cliente_abbinato]:
                             visite_future[cliente_abbinato] = data_evento
                     else:
-                        # Evento passato: teniamo l'ultima data disponibile
                         if cliente_abbinato not in visite_passate or data_evento > visite_passate[cliente_abbinato]:
                             visite_passate[cliente_abbinato] = data_evento
 
@@ -551,7 +548,7 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
                 gg_futuri = (u_visita - oggi).days + 1
                 str_visita = u_visita.strftime("%d/%m/%Y")
                 str_gg = f"-{gg_futuri}"
-                stato_visita = f"🔵 Programmata (tra {gg_futuri} gg)"
+                stato_visita = "🔵 Programmata"
             elif ha_passata:
                 u_visita = visite_passate[cliente]
                 gg_trascorsi = (oggi - u_visita).days
@@ -1171,7 +1168,7 @@ with tab_visite:
         df_vis_display = st.session_state.get("df_visite_cache", pd.DataFrame())
 
         if not df_vis_display.empty:
-            n_prog = len(df_vis_display[df_vis_display["STATO VISITA"].str.contains("Programmata")])
+            n_prog = len(df_vis_display[df_vis_display["STATO VISITA"] == "🔵 Programmata"])
             n_rec = len(df_vis_display[df_vis_display["STATO VISITA"].str.contains("Recente")])
             n_prog_std = len(df_vis_display[df_vis_display["STATO VISITA"].str.contains("Programmare")])
             n_urg = len(df_vis_display[df_vis_display["STATO VISITA"].str.contains("Urgente")])
