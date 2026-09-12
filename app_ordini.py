@@ -557,6 +557,7 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
         CALENDAR_IDS = [
             'primary',
             'pseneci.lavoro@gmail.com'
+            'pseneci.lavoro@gmail.com'
         ]
         
         try:
