@@ -169,12 +169,14 @@ def carica_clienti_ignorati_visite_cloud():
     except Exception as e:
         return []
 
-def aggiungi_cliente_ignorato_visita_cloud(cliente_nome):
+def aggiungi_clienti_ignorati_visite_cloud(lista_clienti_nomi):
     try:
-        supabase.table("clienti_ignorati_visite").insert({"cliente": cliente_nome}).execute()
+        dati_db = [{"cliente": nome} for nome in lista_clienti_nomi if nome]
+        if dati_db:
+            supabase.table("clienti_ignorati_visite").insert(dati_db).execute()
         return True
     except Exception as e:
-        st.error(f"Errore nell'esclusione del cliente: {e}")
+        st.error(f"Errore nell'esclusione dei clienti: {e}")
         return False
 
 def rimuovi_cliente_ignorato_visita_cloud(cliente_nome):
@@ -589,7 +591,6 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
                 str_visita = u_visita.strftime("%d/%m/%Y")
                 str_gg = str(gg_trascorsi)
                 
-                # NUOVI SCAGLIONI: <60gg, 60-90gg, >90gg
                 if gg_trascorsi < 60:
                     stato_visita = "🟢 Recente (< 60 gg)"
                 elif gg_trascorsi <= 90:
@@ -630,6 +631,9 @@ if "uploader_key" not in st.session_state:
 
 if "select_all_state" not in st.session_state:
     st.session_state.select_all_state = False
+
+if "select_all_visite_state" not in st.session_state:
+    st.session_state.select_all_visite_state = False
 
 if "coppie_ignorate_list" not in st.session_state:
     st.session_state.coppie_ignorate_list = carica_coppie_ignorate_cloud()
@@ -1210,7 +1214,6 @@ with tab_visite:
         df_vis_display = st.session_state.get("df_visite_cache", pd.DataFrame())
 
         if not df_vis_display.empty:
-            # Filtra eventuale cache residua se un cliente è stato ignorato di recente
             df_vis_display = df_vis_display[~df_vis_display["CLIENTE"].isin(set_cli_ignorati)]
 
             n_prog = len(df_vis_display[df_vis_display["STATO VISITA"] == "🔵 Programmata"])
@@ -1238,25 +1241,44 @@ with tab_visite:
             if sel_cli_v != "Tutti":
                 df_vis_filt = df_vis_filt[df_vis_filt["CLIENTE"] == sel_cli_v]
 
-            # Tabella principale con opzione di esclusione cliente
-            st.dataframe(
-                df_vis_filt,
+            # Inseriamo la colonna checkbox 'Seleziona'
+            df_vis_edit = df_vis_filt.copy()
+            df_vis_edit.insert(0, "Seleziona", st.session_state.select_all_visite_state)
+
+            edited_vis_df = st.data_editor(
+                df_vis_edit,
                 use_container_width=True,
-                hide_index=True
+                num_rows="dynamic",
+                key="editor_visite"
             )
 
-            # Azione Rapida: Escludi / Ignora un Cliente
-            with st.expander("🙈 Ignora / Escludi un Cliente dal Monitoraggio"):
-                st.caption("Seleziona un cliente che non desideri visitare per rimuoverlo dalla tabella delle visite.")
-                c_ign1, c_ign2 = st.columns([3, 1])
-                cli_da_ignorare = c_ign1.selectbox("Seleziona Cliente da escludere:", ["-- Seleziona --"] + list_cli_db, key="sel_cli_ignore_vis")
-                if c_ign2.button("🚫 Escludi Cliente", key="btn_ign_vis_cli"):
-                    if cli_da_ignorare != "-- Seleziona --":
-                        if aggiungi_cliente_ignorato_visita_cloud(cli_da_ignorare):
+            # Pulsanti Seleziona / Deseleziona / Ignora
+            col_v_sel1, col_v_sel2, col_v_ign = st.columns([1.5, 1.5, 3])
+
+            with col_v_sel1:
+                if st.button("☑️ Seleziona Tutte", key="btn_sel_all_vis"):
+                    st.session_state.select_all_visite_state = True
+                    st.rerun()
+
+            with col_v_sel2:
+                if st.button("⬜ Deseleziona Tutte", key="btn_unsel_all_vis"):
+                    st.session_state.select_all_visite_state = False
+                    st.rerun()
+
+            with col_v_ign:
+                clienti_selezionati_vis = edited_vis_df[edited_vis_df["Seleziona"] == True]["CLIENTE"].tolist()
+                count_vis_sel = len(clienti_selezionati_vis)
+                
+                if st.button(f"🚫 Escludi Selezionati ({count_vis_sel})", type="primary", key="btn_ign_selected_vis"):
+                    if count_vis_sel > 0:
+                        if aggiungi_clienti_ignorati_visite_cloud(clienti_selezionati_vis):
                             st.session_state.clienti_ignorati_visite_list = carica_clienti_ignorati_visite_cloud()
-                            st.session_state.df_visite_cache = pd.DataFrame() # Invalida la cache per rigenerare
-                            st.success(f"Cliente '{cli_da_ignorare}' escluso con successo!")
+                            st.session_state.df_visite_cache = pd.DataFrame()
+                            st.session_state.select_all_visite_state = False
+                            st.success(f"Esclusi {count_vis_sel} clienti con successo!")
                             st.rerun()
+                    else:
+                        st.warning("Spunta almeno un cliente dalla tabella tramite la casella 'Seleziona'.")
 
             st.divider()
 
