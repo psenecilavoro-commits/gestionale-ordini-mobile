@@ -160,6 +160,40 @@ def svuota_coppie_ignorate_cloud():
         return False
 
 # ---------------------------------------------------------
+# GESTIONE PERMANENTE CLIENTE IGNORATI VISITE SU CLOUD
+# ---------------------------------------------------------
+def carica_clienti_ignorati_visite_cloud():
+    try:
+        res = supabase.table("clienti_ignorati_visite").select("cliente").execute()
+        return [r["cliente"] for r in res.data]
+    except Exception as e:
+        return []
+
+def aggiungi_cliente_ignorato_visita_cloud(cliente_nome):
+    try:
+        supabase.table("clienti_ignorati_visite").insert({"cliente": cliente_nome}).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nell'esclusione del cliente: {e}")
+        return False
+
+def rimuovi_cliente_ignorato_visita_cloud(cliente_nome):
+    try:
+        supabase.table("clienti_ignorati_visite").delete().eq("cliente", cliente_nome).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nel ripristino del cliente: {e}")
+        return False
+
+def svuota_clienti_ignorati_visite_cloud():
+    try:
+        supabase.table("clienti_ignorati_visite").delete().neq("id", 0).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nel ripristino dei clienti: {e}")
+        return False
+
+# ---------------------------------------------------------
 # FUNZIONE DI ESTRAZIONE MULTI-LAYOUT (VECCHIO + NUOVO)
 # ---------------------------------------------------------
 def estrai_dati_pdf(pdf_file):
@@ -433,7 +467,7 @@ def calcola_previsionale(df_ordini):
     return df_prev
 
 # ---------------------------------------------------------
-# ESTRAZIONE EVENTI GOOGLE CALENDAR (STATO UNIFICATO)
+# ESTRAZIONE EVENTI GOOGLE CALENDAR (SCAGLIONI 60-90 GG)
 # ---------------------------------------------------------
 def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
     service = get_calendar_service()
@@ -555,12 +589,13 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
                 str_visita = u_visita.strftime("%d/%m/%Y")
                 str_gg = str(gg_trascorsi)
                 
-                if gg_trascorsi <= 30:
-                    stato_visita = "🟢 Recente (< 30 gg)"
-                elif gg_trascorsi <= 60:
-                    stato_visita = "🟡 Programmare (30-60 gg)"
+                # NUOVI SCAGLIONI: <60gg, 60-90gg, >90gg
+                if gg_trascorsi < 60:
+                    stato_visita = "🟢 Recente (< 60 gg)"
+                elif gg_trascorsi <= 90:
+                    stato_visita = "🟡 Programmare (60-90 gg)"
                 else:
-                    stato_visita = "🔴 Urgente (> 60 gg)"
+                    stato_visita = "🔴 Urgente (> 90 gg)"
             else:
                 str_visita = "Mai trovata"
                 str_gg = "N/D"
@@ -598,6 +633,9 @@ if "select_all_state" not in st.session_state:
 
 if "coppie_ignorate_list" not in st.session_state:
     st.session_state.coppie_ignorate_list = carica_coppie_ignorate_cloud()
+
+if "clienti_ignorati_visite_list" not in st.session_state:
+    st.session_state.clienti_ignorati_visite_list = carica_clienti_ignorati_visite_cloud()
 
 if "mappa_custom_calendar" not in st.session_state:
     st.session_state.mappa_custom_calendar = {}
@@ -1147,12 +1185,16 @@ with tab_previsionale:
 # =========================================================
 with tab_visite:
     st.subheader("📅 Monitoraggio Visite Clienti (Google Calendar)")
-    st.markdown("Il sistema scansiona in sola lettura il tuo **Google Calendar**, riconosce i titoli degli eventi associandoli ai clienti del database e calcola da quanti giorni non li visiti (o tra quanti li visiterai).")
+    st.markdown("Il sistema scansiona in sola lettura il tuo **Google Calendar**, riconosce i titoli degli eventi associandoli ai clienti del database e calcola da quanti giorni non li visiti.")
 
     df_vis_base = st.session_state.db_ordini
 
     if not df_vis_base.empty:
-        list_cli_db = sorted([x for x in df_vis_base["CLIENTE"].unique() if str(x).strip()])
+        list_cli_db_tutti = sorted([x for x in df_vis_base["CLIENTE"].unique() if str(x).strip()])
+        set_cli_ignorati = set(st.session_state.clienti_ignorati_visite_list)
+        
+        # Esclude i clienti contrassegnati come ignorati
+        list_cli_db = [c for c in list_cli_db_tutti if c not in set_cli_ignorati]
 
         col_v1, col_v2 = st.columns([3, 1])
 
@@ -1168,6 +1210,9 @@ with tab_visite:
         df_vis_display = st.session_state.get("df_visite_cache", pd.DataFrame())
 
         if not df_vis_display.empty:
+            # Filtra eventuale cache residua se un cliente è stato ignorato di recente
+            df_vis_display = df_vis_display[~df_vis_display["CLIENTE"].isin(set_cli_ignorati)]
+
             n_prog = len(df_vis_display[df_vis_display["STATO VISITA"] == "🔵 Programmata"])
             n_rec = len(df_vis_display[df_vis_display["STATO VISITA"].str.contains("Recente")])
             n_prog_std = len(df_vis_display[df_vis_display["STATO VISITA"].str.contains("Programmare")])
@@ -1175,9 +1220,9 @@ with tab_visite:
 
             v_m0, v_m1, v_m2, v_m3 = st.columns(4)
             v_m0.metric("🔵 Visita Programmata", n_prog)
-            v_m1.metric("🟢 Visitati (< 30 gg)", n_rec)
-            v_m2.metric("🟡 Da Programmare (30-60 gg)", n_prog_std)
-            v_m3.metric("🔴 Visita Urgente (> 60 gg)", n_urg)
+            v_m1.metric("🟢 Visitati (< 60 gg)", n_rec)
+            v_m2.metric("🟡 Da Programmare (60-90 gg)", n_prog_std)
+            v_m3.metric("🔴 Visita Urgente (> 90 gg)", n_urg)
 
             st.divider()
 
@@ -1193,14 +1238,52 @@ with tab_visite:
             if sel_cli_v != "Tutti":
                 df_vis_filt = df_vis_filt[df_vis_filt["CLIENTE"] == sel_cli_v]
 
+            # Tabella principale con opzione di esclusione cliente
             st.dataframe(
                 df_vis_filt,
                 use_container_width=True,
                 hide_index=True
             )
 
+            # Azione Rapida: Escludi / Ignora un Cliente
+            with st.expander("🙈 Ignora / Escludi un Cliente dal Monitoraggio"):
+                st.caption("Seleziona un cliente che non desideri visitare per rimuoverlo dalla tabella delle visite.")
+                c_ign1, c_ign2 = st.columns([3, 1])
+                cli_da_ignorare = c_ign1.selectbox("Seleziona Cliente da escludere:", ["-- Seleziona --"] + list_cli_db, key="sel_cli_ignore_vis")
+                if c_ign2.button("🚫 Escludi Cliente", key="btn_ign_vis_cli"):
+                    if cli_da_ignorare != "-- Seleziona --":
+                        if aggiungi_cliente_ignorato_visita_cloud(cli_da_ignorare):
+                            st.session_state.clienti_ignorati_visite_list = carica_clienti_ignorati_visite_cloud()
+                            st.session_state.df_visite_cache = pd.DataFrame() # Invalida la cache per rigenerare
+                            st.success(f"Cliente '{cli_da_ignorare}' escluso con successo!")
+                            st.rerun()
+
             st.divider()
 
+            # Gestione e Ripristino dei Clienti Ignorati
+            if st.session_state.clienti_ignorati_visite_list:
+                with st.expander(f"👁️ Gestisci Clienti Esclusi ({len(st.session_state.clienti_ignorati_visite_list)})"):
+                    st.caption("Elenco dei clienti attualmente esclusi dal monitoraggio delle visite:")
+                    
+                    c_rst1, c_rst2 = st.columns([3, 1])
+                    cli_da_ripristinare = c_rst1.selectbox("Seleziona un cliente da ripristinare:", ["-- Seleziona --"] + sorted(st.session_state.clienti_ignorati_visite_list), key="sel_cli_rst_vis")
+                    
+                    if c_rst2.button("↩️ Ripristina Selezionato", key="btn_rst_single_cli"):
+                        if cli_da_ripristinare != "-- Seleziona --":
+                            if rimuovi_cliente_ignorato_visita_cloud(cli_da_ripristinare):
+                                st.session_state.clienti_ignorati_visite_list = carica_clienti_ignorati_visite_cloud()
+                                st.session_state.df_visite_cache = pd.DataFrame()
+                                st.success(f"Cliente '{cli_da_ripristinare}' ripristinato!")
+                                st.rerun()
+
+                    if st.button("🔄 Ripristina TUTTI i clienti esclusi", type="primary", key="btn_rst_all_cli"):
+                        if svuota_clienti_ignorati_visite_cloud():
+                            st.session_state.clienti_ignorati_visite_list = []
+                            st.session_state.df_visite_cache = pd.DataFrame()
+                            st.success("Tutti i clienti sono stati ripristinati con successo!")
+                            st.rerun()
+
+            # Sezione Mappatura Manuale / Sinonimi
             with st.expander("🔗 Mappatura Manuale / Sinonimi Titoli Calendar"):
                 st.caption("Se su Google Calendar scrivi nomi abbreviati (es. 'MARTIGNONI' invece del nome completo), puoi associare qui la parola chiave alla ragione sociale esatta.")
                 
