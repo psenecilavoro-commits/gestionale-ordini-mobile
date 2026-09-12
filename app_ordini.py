@@ -196,6 +196,42 @@ def svuota_clienti_ignorati_visite_cloud():
         return False
 
 # ---------------------------------------------------------
+# GESTIONE PERMANENTE PREVISIONALE IGNORATO SU CLOUD
+# ---------------------------------------------------------
+def carica_articoli_ignorati_prev_cloud():
+    try:
+        res = supabase.table("articoli_ignorati_previsionale").select("cliente, articolo").execute()
+        return [(r["cliente"], r["articolo"]) for r in res.data]
+    except Exception as e:
+        return []
+
+def aggiungi_articoli_ignorati_prev_cloud(lista_coppie):
+    try:
+        dati_db = [{"cliente": c, "articolo": a} for c, a in lista_coppie if c and a]
+        if dati_db:
+            supabase.table("articoli_ignorati_previsionale").insert(dati_db).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nell'esclusione dal previsionale: {e}")
+        return False
+
+def rimuovi_articolo_ignorato_prev_cloud(cliente, articolo):
+    try:
+        supabase.table("articoli_ignorati_previsionale").delete().eq("cliente", cliente).eq("articolo", articolo).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nel ripristino dal previsionale: {e}")
+        return False
+
+def svuota_articoli_ignorati_prev_cloud():
+    try:
+        supabase.table("articoli_ignorati_previsionale").delete().neq("id", 0).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nel ripristino totale del previsionale: {e}")
+        return False
+
+# ---------------------------------------------------------
 # FUNZIONE DI ESTRAZIONE MULTI-LAYOUT (VECCHIO + NUOVO)
 # ---------------------------------------------------------
 def estrai_dati_pdf(pdf_file):
@@ -635,11 +671,17 @@ if "select_all_state" not in st.session_state:
 if "select_all_visite_state" not in st.session_state:
     st.session_state.select_all_visite_state = False
 
+if "select_all_prev_state" not in st.session_state:
+    st.session_state.select_all_prev_state = False
+
 if "coppie_ignorate_list" not in st.session_state:
     st.session_state.coppie_ignorate_list = carica_coppie_ignorate_cloud()
 
 if "clienti_ignorati_visite_list" not in st.session_state:
     st.session_state.clienti_ignorati_visite_list = carica_clienti_ignorati_visite_cloud()
+
+if "articoli_ignorati_prev_list" not in st.session_state:
+    st.session_state.articoli_ignorati_prev_list = carica_articoli_ignorati_prev_cloud()
 
 if "mappa_custom_calendar" not in st.session_state:
     st.session_state.mappa_custom_calendar = {}
@@ -1138,6 +1180,12 @@ with tab_previsionale:
         df_prev_res = calcola_previsionale(df_prev_base)
 
         if not df_prev_res.empty:
+            # Filtro per escludere gli articoli ignorati dall'utente
+            set_prev_ignorati = set(st.session_state.articoli_ignorati_prev_list)
+            if set_prev_ignorati:
+                df_prev_res["_key"] = list(zip(df_prev_res["CLIENTE"], df_prev_res["ARTICOLO"]))
+                df_prev_res = df_prev_res[~df_prev_res["_key"].isin(set_prev_ignorati)].drop(columns=["_key"])
+
             n_ritardo = len(df_prev_res[df_prev_res["STATO"].str.contains("Ritardo")])
             n_corr = len(df_prev_res[df_prev_res["STATO"].str.contains("Mese Corrente")])
             n_prox = len(df_prev_res[df_prev_res["STATO"].str.contains("Mese Successivo")])
@@ -1174,11 +1222,71 @@ with tab_previsionale:
 
             st.caption(f"Righe trovate: **{len(df_prev_disp)}**")
 
-            st.dataframe(
-                df_prev_disp,
+            # Tabella interattiva con checkbox
+            df_prev_edit = df_prev_disp.copy()
+            df_prev_edit.insert(0, "Seleziona", st.session_state.select_all_prev_state)
+
+            edited_prev_df = st.data_editor(
+                df_prev_edit,
                 use_container_width=True,
-                hide_index=True
+                hide_index=True,
+                key="editor_previsionale"
             )
+
+            # Pulsanti di azione per il Previsionale
+            col_p_sel1, col_p_sel2, col_p_ign = st.columns([1.5, 1.5, 3])
+
+            with col_p_sel1:
+                if st.button("☑️ Seleziona Tutte", key="btn_sel_all_prev"):
+                    st.session_state.select_all_prev_state = True
+                    st.rerun()
+
+            with col_p_sel2:
+                if st.button("⬜ Deseleziona Tutte", key="btn_unsel_all_prev"):
+                    st.session_state.select_all_prev_state = False
+                    st.rerun()
+
+            with col_p_ign:
+                righe_selezionate_prev = edited_prev_df[edited_prev_df["Seleziona"] == True]
+                count_prev_sel = len(righe_selezionate_prev)
+                
+                if st.button(f"🚫 Escludi Selezionati ({count_prev_sel})", type="primary", key="btn_ign_selected_prev"):
+                    if count_prev_sel > 0:
+                        coppie_da_escludere = list(zip(righe_selezionate_prev["CLIENTE"], righe_selezionate_prev["ARTICOLO"]))
+                        if aggiungi_articoli_ignorati_prev_cloud(coppie_da_escludere):
+                            st.session_state.articoli_ignorati_prev_list = carica_articoli_ignorati_prev_cloud()
+                            st.session_state.select_all_prev_state = False
+                            st.success(f"Esclusi {count_prev_sel} articoli dal previsionale!")
+                            st.rerun()
+                    else:
+                        st.warning("Spunta almeno una riga dalla tabella tramite la casella 'Seleziona'.")
+
+            st.divider()
+
+            # Pannello di Ripristino Previsionale
+            if st.session_state.articoli_ignorati_prev_list:
+                with st.expander(f"👁️ Gestisci Articoli Esclusi dal Previsionale ({len(st.session_state.articoli_ignorati_prev_list)})"):
+                    st.caption("Elenco delle coppie Cliente - Articolo attualmente escluse dal previsionale:")
+                    
+                    opzioni_ripristino_prev = [f"{c} ➔ {a}" for c, a in st.session_state.articoli_ignorati_prev_list]
+                    
+                    c_prst1, c_prst2 = st.columns([3, 1])
+                    scelta_rst_prev = c_prst1.selectbox("Seleziona una voce da ripristinare:", ["-- Seleziona --"] + sorted(opzioni_ripristino_prev), key="sel_prev_rst")
+                    
+                    if c_prst2.button("↩️ Ripristina Selezionato", key="btn_rst_single_prev"):
+                        if scelta_rst_prev != "-- Seleziona --":
+                            # Ricava cliente e articolo dividendo la stringa
+                            cli_rst, art_rst = scelta_rst_prev.split(" ➔ ", 1)
+                            if rimuovi_articolo_ignorato_prev_cloud(cli_rst, art_rst):
+                                st.session_state.articoli_ignorati_prev_list = carica_articoli_ignorati_prev_cloud()
+                                st.success(f"Ripristinato: {scelta_rst_prev}")
+                                st.rerun()
+
+                    if st.button("🔄 Ripristina TUTTI gli articoli esclusi", type="primary", key="btn_rst_all_prev"):
+                        if svuota_articoli_ignorati_prev_cloud():
+                            st.session_state.articoli_ignorati_prev_list = []
+                            st.success("Tutti gli articoli del previsionale sono stati ripristinati!")
+                            st.rerun()
         else:
             st.info("Nessuna previsione di riordine calcolata per il periodo attuale.")
     else:
