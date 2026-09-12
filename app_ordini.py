@@ -40,7 +40,7 @@ if not verifica_password():
     st.stop()
 
 # ---------------------------------------------------------
-# CONFIGURAZIONE CONNESSIONE SUPABASE CLOUD (DA SECRETS)
+# CONFIGURAZIONE CONNESSIONE SUPABASE CLOUD
 # ---------------------------------------------------------
 @st.cache_resource
 def init_supabase() -> Client:
