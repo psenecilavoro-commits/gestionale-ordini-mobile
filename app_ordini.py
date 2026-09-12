@@ -40,14 +40,23 @@ if not verifica_password():
     st.stop()
 
 # ---------------------------------------------------------
-# CONFIGURAZIONE CONNESSIONE SUPABASE CLOUD
+# CONFIGURAZIONE CONNESSIONE SUPABASE CLOUD (AGGIORNATA)
 # ---------------------------------------------------------
 @st.cache_resource
 def init_supabase() -> Client:
     try:
         url = st.secrets["supabase"]["url"]
         key = st.secrets["supabase"]["key"]
-        return create_client(url, key)
+        
+        # Configurazione degli headers per le nuove API Keys
+        headers = {
+            "apikey": key,
+            "Authorization": f"Bearer {key}"
+        }
+        
+        client = create_client(url, key)
+        client.postgrest.auth(key)
+        return client
     except Exception as e:
         st.error(f"Errore di connessione a Supabase: {e}")
         return None
