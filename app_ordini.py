@@ -42,16 +42,13 @@ if not verifica_password():
 # ---------------------------------------------------------
 # CONFIGURAZIONE CONNESSIONE SUPABASE CLOUD
 # ---------------------------------------------------------
+SUPABASE_URL = "https://azmyqrcxfnimwrhpyhsv.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF6bXlxcmN4Zm5pbXdyaHB5aHN2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg1OTAxNjEsImV4cCI6MjEwNDE2NjE2MX0.sFf3_axQg6uOqWCQJcfvWGbebDwrVGngIyA0jPZqjz"
+
 @st.cache_resource
 def init_supabase() -> Client:
     try:
-        if "supabase" in st.secrets:
-            url = st.secrets["supabase"]["url"]
-            key = st.secrets["supabase"]["key"]
-        else:
-            url = "https://azmyqrcxfnimwrhpyhsv.supabase.co"
-            key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF6bXlxcmN4Zm5pbXdyaHB5aHN2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg1OTAxNjEsImV4cCI6MjEwNDE2NjE2MX0.sFf3_axQg6uOqWCQJcfvWGbebDwrVGngIyA0jPZqjz4"
-        return create_client(url, key)
+        return create_client(SUPABASE_URL, SUPABASE_KEY)
     except Exception as e:
         st.error(f"Errore di connessione a Supabase: {e}")
         return None
