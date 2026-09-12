@@ -73,6 +73,10 @@ def get_calendar_service():
     try:
         if "gcp_service_account" in st.secrets:
             creds_dict = dict(st.secrets["gcp_service_account"])
+            # Normalizzazione automatica dei ritorni a capo per evitare Invalid JWT Signature
+            if "private_key" in creds_dict:
+                creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+            
             creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
             service = build('calendar', 'v3', credentials=creds)
             return service
