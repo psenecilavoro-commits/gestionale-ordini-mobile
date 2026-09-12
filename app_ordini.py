@@ -40,20 +40,20 @@ if not verifica_password():
     st.stop()
 
 # ---------------------------------------------------------
-# CONFIGURAZIONE CONNESSIONE SUPABASE CLOUD
+# CONFIGURAZIONE CONNESSIONE SUPABASE CLOUD (DA SECRETS)
 # ---------------------------------------------------------
-SUPABASE_URL = "https://azmyqrcxfnimwrhpyhsv.supabase.co"
-SUPABASE_KEY = "sb_publishable_DIInoof0G2XKBy1KIQNEsQ_7cRj8w4j"
-
 @st.cache_resource
 def init_supabase() -> Client:
     try:
-        return create_client(SUPABASE_URL, SUPABASE_KEY)
+        url = st.secrets["supabase"]["url"]
+        key = st.secrets["supabase"]["key"]
+        return create_client(url, key)
     except Exception as e:
         st.error(f"Errore di connessione a Supabase: {e}")
         return None
 
 supabase = init_supabase()
+
 # ---------------------------------------------------------
 # CONNESSIONE GOOGLE CALENDAR API (VIA SERVICE ACCOUNT)
 # ---------------------------------------------------------
