@@ -433,7 +433,7 @@ def calcola_previsionale(df_ordini):
     return df_prev
 
 # ---------------------------------------------------------
-# FUNZIONE DI ESTRAZIONE EVENTI DA GOOGLE CALENDAR (TUTTI I CALENDARI)
+# FUNZIONE DI ESTRAZIONE EVENTI DA GOOGLE CALENDAR (CORRETTA)
 # ---------------------------------------------------------
 def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
     service = get_calendar_service()
@@ -441,29 +441,37 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
         return pd.DataFrame()
 
     try:
-        # 1. Recupera la lista di tutti i calendari accessibili alla Service Account
+        # Recupera tutti i calendari a cui ha accesso la Service Account
         calendar_list = service.calendarList().list().execute().get('items', [])
         
-        time_min = (datetime.utcnow() - timedelta(days=365)).isoformat() + 'Z'
-        visite_cliente = {}
-        oggi = datetime.now()
+        if not calendar_list:
+            st.warning("⚠️ La Service Account non ha accesso a nessun calendario. Verifica di aver condiviso il calendario 'Innova Group' o 'Emilabel' con l'email del bot.")
+            return pd.DataFrame()
 
-        # Funzione helper per pulire le ragioni sociali
+        # Consideriamo eventi da 365 giorni fa ad oggi
+        oggi = datetime.now()
+        time_min = (oggi - timedelta(days=365)).isoformat() + 'Z'
+        visite_cliente = {}
+
         def pulisci_testo(t):
+            if not t:
+                return ""
             t = re.sub(r"\b(SPA|SRL|S\.P\.A\.|S\.R\.L\.|SS|S\.S\.|INC|LTD)\b", "", t, flags=re.IGNORECASE)
-            t = re.sub(r"[^\w\s]", " ", t)  # Rimuove trattini e punteggiatura
+            t = re.sub(r"[^\w\s]", " ", t)
             return re.sub(r"\s+", " ", t).strip().lower()
 
-        # Mappa dei clienti DB puliti
-        clienti_db_clean = {c: pulisci_testo(c) for c in lista_clienti_db}
+        clienti_db_clean = {c: pulisci_testo(c) for c in lista_clienti_db if c.strip()}
+        
+        eventi_letti_debug = []
 
-        # 2. Cicla su ciascun calendario trovato
         for cal in calendar_list:
             cal_id = cal['id']
+            cal_summary = cal.get('summary', 'Senza nome')
+
             events_result = service.events().list(
                 calendarId=cal_id, 
                 timeMin=time_min,
-                maxResults=1000, 
+                maxResults=2500, 
                 singleEvents=True,
                 orderBy='startTime'
             ).execute()
@@ -476,39 +484,53 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
 
                 start = event['start'].get('dateTime', event['start'].get('date'))
                 try:
-                    data_evento = datetime.fromisoformat(start.replace('Z', '+00:00')).replace(tzinfo=None)
+                    # Estrazione data senza fuso orario per confronto omogeneo
+                    str_date = start.split('T')[0]
+                    data_evento = datetime.strptime(str_date, "%Y-%m-%d")
                 except Exception:
                     continue
 
                 if data_evento > oggi:
                     continue
 
+                eventi_letti_debug.append(f"[{cal_summary}] {data_evento.strftime('%d/%m/%Y')} - {summary}")
+
                 cliente_abbinato = None
 
-                # Check 1: Mappatura manuale / Sinonimi
+                # 1. Regole manuali / sinonimi
                 for parola_chiave, cliente_reale in mappa_custom.items():
                     if parola_chiave.lower() in summary.lower():
                         cliente_abbinato = cliente_reale
                         break
 
-                # Check 2: Match automatico su testo pulito
+                # 2. Matching automatico
                 if not cliente_abbinato:
                     summary_clean = pulisci_testo(summary)
                     for cliente_orig, cliente_clean in clienti_db_clean.items():
-                        # Se la parola chiave pulita è contenuta nel titolo evento o viceversa
-                        if len(cliente_clean) > 2 and (cliente_clean in summary_clean or summary_clean in cliente_clean):
-                            cliente_abbinato = cliente_orig
-                            break
-                        # In alternativa usa il fuzzy match permissivo
-                        elif fuzz.partial_ratio(summary_clean, cliente_clean) >= 70:
-                            cliente_abbinato = cliente_orig
-                            break
+                        if len(cliente_clean) >= 2:
+                            # Controlla sovrapposizione delle parole (es. "mec" e "carni")
+                            parole_summary = set(summary_clean.split())
+                            parole_cliente = set(cliente_clean.split())
+                            
+                            if parole_summary.issubset(parole_cliente) or parole_cliente.issubset(parole_summary):
+                                cliente_abbinato = cliente_orig
+                                break
+                            elif fuzz.partial_ratio(summary_clean, cliente_clean) >= 70:
+                                cliente_abbinato = cliente_orig
+                                break
 
                 if cliente_abbinato:
                     if cliente_abbinato not in visite_cliente or data_evento > visite_cliente[cliente_abbinato]:
                         visite_cliente[cliente_abbinato] = data_evento
 
-        # 3. Costruzione tabella finale
+        # Mostra log di debug espandibile in fondo
+        with st.expander("🔍 Log Debug: Calendari ed Eventi letti"):
+            st.write(f"Calendari trovati ({len(calendar_list)}):", [c.get('summary') for c in calendar_list])
+            st.write(f"Totale eventi analizzati: {len(eventi_letti_debug)}")
+            st.caption("Ultimi 20 eventi letti:")
+            st.code("\n".join(eventi_letti_debug[-20:]))
+
+        # Costruzione dataframe risultati
         risultati = []
         for cliente in lista_clienti_db:
             if cliente in visite_cliente:
@@ -543,35 +565,6 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
     except Exception as e:
         st.error(f"Errore nella lettura del Google Calendar: {e}")
         return pd.DataFrame()
-
-# ---------------------------------------------------------
-# INTERFACCIA STREAMLIT A TABS (6 SCHEDE)
-# ---------------------------------------------------------
-st.title("📦 Gestionale Ordini PDF (Cloud Supabase)")
-
-if "db_ordini" not in st.session_state:
-    st.session_state.db_ordini = carica_db_cloud()
-
-if "uploader_key" not in st.session_state:
-    st.session_state.uploader_key = 0
-
-if "select_all_state" not in st.session_state:
-    st.session_state.select_all_state = False
-
-if "coppie_ignorate_list" not in st.session_state:
-    st.session_state.coppie_ignorate_list = carica_coppie_ignorate_cloud()
-
-if "mappa_custom_calendar" not in st.session_state:
-    st.session_state.mappa_custom_calendar = {}
-
-tab_database, tab_grafici, tab_norm_cli, tab_fuzzy, tab_previsionale, tab_visite = st.tabs([
-    "📋 Database Ordini", 
-    "📈 Analisi & Grafici", 
-    "🏷️ Normalizzazione Cliente",
-    "🤖 Pulizia Smart (Fuzzy)",
-    "🔮 Previsionale Riordini",
-    "📅 Monitoraggio Visite"
-])
 
 # =========================================================
 # SCHEDA 1: DATABASE ORDINI & UPLOAD
