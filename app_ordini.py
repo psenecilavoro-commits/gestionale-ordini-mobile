@@ -43,7 +43,7 @@ if not verifica_password():
 # CONFIGURAZIONE CONNESSIONE SUPABASE CLOUD
 # ---------------------------------------------------------
 SUPABASE_URL = "https://azmyqrcxfnimwrhpyhsv.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF6bXlxcmN4Zm5pbXdyaHB5aHN2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg1OTAxNjEsImV4cCI6MjEwNDE2NjE2MX0.sFf3_axQg6uOqWCQJcfvWGbebDwrVGngIyA0jPZqjz"
+SUPABASE_KEY = "sb_publishable_DIInoof0G2XKBy1KIQNEsQ_7cRj8w4j"
 
 @st.cache_resource
 def init_supabase() -> Client:
@@ -54,7 +54,6 @@ def init_supabase() -> Client:
         return None
 
 supabase = init_supabase()
-
 # ---------------------------------------------------------
 # CONNESSIONE GOOGLE CALENDAR API (VIA SERVICE ACCOUNT)
 # ---------------------------------------------------------
