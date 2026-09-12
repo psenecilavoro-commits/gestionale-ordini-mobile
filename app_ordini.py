@@ -546,27 +546,29 @@ def calcola_previsionale(df_ordini):
     return df_prev
 
 # ---------------------------------------------------------
-# ESTRAZIONE EVENTI GOOGLE CALENDAR (SCAGLIONI 60-90 GG)
+# ESTRAZIONE EVENTI GOOGLE CALENDAR (VERSIONE DEBUG & AUTO-DISCOVERY)
 # ---------------------------------------------------------
 def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
     service = get_calendar_service()
     if not service:
+        st.error("Servizio Google Calendar non inizializzato. Controlla i Secrets 'gcp_service_account'.")
         return pd.DataFrame()
 
     try:
-        CALENDAR_IDS = [
-            'primary',
-            'pseneci.lavoro@gmail.com'
-            'pseneci.lavoro@gmail.com'
-        ]
-        
+        # Recupera automaticamente tutti i calendari accessibili al Service Account
+        CALENDAR_IDS = []
         try:
             cal_list_res = service.calendarList().list().execute().get('items', [])
             for c in cal_list_res:
-                if c['id'] not in CALENDAR_IDS:
-                    CALENDAR_IDS.append(c['id'])
-        except Exception:
-            pass
+                CALENDAR_IDS.append(c['id'])
+        except Exception as e:
+            st.warning(f"Impossibile elencare i calendari in automatico: {e}")
+
+        # Fallback agli ID manuali se l'elenco automatico è vuoto
+        if not CALENDAR_IDS:
+            CALENDAR_IDS = ['primary', 'pseneci.lavoro@gmail.com']
+
+        st.caption(f"Calendari identificati per la scansione: {CALENDAR_IDS}")
 
         oggi = datetime.now()
         time_min = (oggi - timedelta(days=365)).isoformat() + 'Z'
@@ -574,6 +576,7 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
         
         visite_passate = {}
         visite_future = {}
+        eventi_letti_debug = []
 
         def pulisci_testo(t):
             if not t:
@@ -583,7 +586,6 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
             return re.sub(r"\s+", " ", t).strip().lower()
 
         clienti_db_clean = {c: pulisci_testo(c) for c in lista_clienti_db if str(c).strip()}
-        eventi_letti_debug = []
 
         for cal_id in CALENDAR_IDS:
             try:
@@ -596,7 +598,8 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
                     orderBy='startTime'
                 ).execute()
                 events = events_result.get('items', [])
-            except Exception:
+            except Exception as err_cal:
+                st.error(f"Errore nella lettura del calendario '{cal_id}': {err_cal}")
                 continue
 
             for event in events:
@@ -611,7 +614,7 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
                 except Exception:
                     continue
 
-                eventi_letti_debug.append(f"[{cal_id[:12]}...] {data_evento.strftime('%d/%m/%Y')} - {summary}")
+                eventi_letti_debug.append(f"[{cal_id[:15]}...] {data_evento.strftime('%d/%m/%Y')} - {summary}")
 
                 cliente_abbinato = None
 
@@ -695,7 +698,6 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
     except Exception as e:
         st.error(f"Errore nella lettura del Google Calendar: {e}")
         return pd.DataFrame()
-
 # ---------------------------------------------------------
 # INTERFACCIA STREAMLIT A TABS (6 SCHEDE)
 # ---------------------------------------------------------
