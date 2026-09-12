@@ -433,7 +433,7 @@ def calcola_previsionale(df_ordini):
     return df_prev
 
 # ---------------------------------------------------------
-# FUNZIONE DI ESTRAZIONE EVENTI DA GOOGLE CALENDAR
+# FUNZIONE DI ESTRAZIONE EVENTI DA GOOGLE CALENDAR (TUTTI I CALENDARI)
 # ---------------------------------------------------------
 def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
     service = get_calendar_service()
@@ -441,55 +441,74 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
         return pd.DataFrame()
 
     try:
-        # Recupera eventi degli ultimi 365 giorni
+        # 1. Recupera la lista di tutti i calendari accessibili alla Service Account
+        calendar_list = service.calendarList().list().execute().get('items', [])
+        
         time_min = (datetime.utcnow() - timedelta(days=365)).isoformat() + 'Z'
-        events_result = service.events().list(
-            calendarId='primary', 
-            timeMin=time_min,
-            maxResults=1000, 
-            singleEvents=True,
-            orderBy='startTime'
-        ).execute()
-        events = events_result.get('items', [])
-
         visite_cliente = {}
         oggi = datetime.now()
 
-        for event in events:
-            summary = event.get('summary', '')
-            if not summary:
-                continue
+        # Funzione helper per pulire le ragioni sociali
+        def pulisci_testo(t):
+            t = re.sub(r"\b(SPA|SRL|S\.P\.A\.|S\.R\.L\.|SS|S\.S\.|INC|LTD)\b", "", t, flags=re.IGNORECASE)
+            t = re.sub(r"[^\w\s]", " ", t)  # Rimuove trattini e punteggiatura
+            return re.sub(r"\s+", " ", t).strip().lower()
 
-            start = event['start'].get('dateTime', event['start'].get('date'))
-            try:
-                data_evento = datetime.fromisoformat(start.replace('Z', '+00:00')).replace(tzinfo=None)
-            except Exception:
-                continue
+        # Mappa dei clienti DB puliti
+        clienti_db_clean = {c: pulisci_testo(c) for c in lista_clienti_db}
 
-            # Se la data è futura rispetto a oggi, la ignoriamo per il calcolo dell'ultima visita
-            if data_evento > oggi:
-                continue
+        # 2. Cicla su ciascun calendario trovato
+        for cal in calendar_list:
+            cal_id = cal['id']
+            events_result = service.events().list(
+                calendarId=cal_id, 
+                timeMin=time_min,
+                maxResults=1000, 
+                singleEvents=True,
+                orderBy='startTime'
+            ).execute()
+            events = events_result.get('items', [])
 
-            cliente_abbinato = None
+            for event in events:
+                summary = event.get('summary', '')
+                if not summary:
+                    continue
 
-            # 1. Controlla prima nelle mappature personalizzate/sinonimi
-            for parola_chiave, cliente_reale in mappa_custom.items():
-                if parola_chiave.lower() in summary.lower():
-                    cliente_abbinato = cliente_reale
-                    break
+                start = event['start'].get('dateTime', event['start'].get('date'))
+                try:
+                    data_evento = datetime.fromisoformat(start.replace('Z', '+00:00')).replace(tzinfo=None)
+                except Exception:
+                    continue
 
-            # 2. Se non abbinato, usa il Fuzzy Matching sui clienti del DB
-            if not cliente_abbinato and lista_clienti_db:
-                match, score, _ = process.extractOne(summary, lista_clienti_db, scorer=fuzz.partial_ratio)
-                if score >= 75:  # Soglia di affidabilità
-                    cliente_abbinato = match
+                if data_evento > oggi:
+                    continue
 
-            # Se abbiamo trovato una corrispondenza con un cliente del DB
-            if cliente_abbinato:
-                if cliente_abbinato not in visite_cliente or data_evento > visite_cliente[cliente_abbinato]:
-                    visite_cliente[cliente_abbinato] = data_evento
+                cliente_abbinato = None
 
-        # Costruisce la tabella finale per tutti i clienti del DB
+                # Check 1: Mappatura manuale / Sinonimi
+                for parola_chiave, cliente_reale in mappa_custom.items():
+                    if parola_chiave.lower() in summary.lower():
+                        cliente_abbinato = cliente_reale
+                        break
+
+                # Check 2: Match automatico su testo pulito
+                if not cliente_abbinato:
+                    summary_clean = pulisci_testo(summary)
+                    for cliente_orig, cliente_clean in clienti_db_clean.items():
+                        # Se la parola chiave pulita è contenuta nel titolo evento o viceversa
+                        if len(cliente_clean) > 2 and (cliente_clean in summary_clean or summary_clean in cliente_clean):
+                            cliente_abbinato = cliente_orig
+                            break
+                        # In alternativa usa il fuzzy match permissivo
+                        elif fuzz.partial_ratio(summary_clean, cliente_clean) >= 70:
+                            cliente_abbinato = cliente_orig
+                            break
+
+                if cliente_abbinato:
+                    if cliente_abbinato not in visite_cliente or data_evento > visite_cliente[cliente_abbinato]:
+                        visite_cliente[cliente_abbinato] = data_evento
+
+        # 3. Costruzione tabella finale
         risultati = []
         for cliente in lista_clienti_db:
             if cliente in visite_cliente:
