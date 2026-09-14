@@ -783,7 +783,7 @@ with tab_database:
     with col_proc:
         btn_processa = st.button("⚙️ Processa PDF", type="primary")
         
-    with col_clear:
+with col_clear:
     if st.button("🧹 Svuota PDF Caricati"):
         st.session_state.uploader_key += 1
         st.session_state.dati_pdf_in_attesa = []
