@@ -88,7 +88,7 @@ def get_calendar_service():
         return None
 
 # ---------------------------------------------------------
-# CARICAMENTO DATABASE CLOUD (PAGINAZIONE ILLIMITATA)
+# CARICAMENTO / SALVATAGGIO DATABASE CLOUD (PAGINATO)
 # ---------------------------------------------------------
 def carica_db_cloud():
     try:
@@ -99,16 +99,11 @@ def carica_db_cloud():
         while True:
             response = supabase.table("ordini").select("*").range(inizio, inizio + step - 1).execute()
             batch = response.data
-            
             if not batch:
                 break
-                
             tutti_i_dati.extend(batch)
-            
-            # Se il batch restituito ha meno di 1000 elementi, siamo all'ultima pagina
             if len(batch) < step:
                 break
-                
             inizio += step
 
         if tutti_i_dati:
@@ -137,6 +132,36 @@ def carica_db_cloud():
     except Exception as e:
         st.error(f"Errore nel caricamento dal Cloud Supabase: {e}")
     return pd.DataFrame(columns=["id", "CLIENTE", "N. ORDINE", "ARTICOLO", "CONSEGNA", "QUANTITÀ", "PREZZO"])
+
+def inserisci_ordini_cloud(nuovi_dati):
+    try:
+        dati_db = []
+        for d in nuovi_dati:
+            dati_db.append({
+                "cliente": d.get("CLIENTE", ""),
+                "n_ordine": d.get("N. ORDINE", ""),
+                "articolo": d.get("ARTICOLO", ""),
+                "consegna": d.get("CONSEGNA", ""),
+                "quantita": d.get("QUANTITÀ", ""),
+                "prezzo": d.get("PREZZO", "")
+            })
+        supabase.table("ordini").insert(dati_db).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nel salvataggio sul Cloud: {e}")
+        return False
+
+def rinomina_articolo_cloud(vecchio_nome, nuovo_nome, cliente=None):
+    try:
+        query = supabase.table("ordini").update({"articolo": nuovo_nome}).eq("articolo", vecchio_nome)
+        if cliente:
+            query = query.eq("cliente", cliente)
+        query.execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nell'aggiornamento dell'articolo sul Cloud: {e}")
+        return False
+
 # ---------------------------------------------------------
 # GESTIONE PERMANENTE COPPIE IGNORATE SU CLOUD
 # ---------------------------------------------------------
@@ -779,74 +804,69 @@ with tab_database:
     )
 
     col_proc, col_clear, _ = st.columns([1.5, 2, 4])
-    
+
     with col_proc:
         btn_processa = st.button("⚙️ Processa PDF", type="primary")
-        
-with col_clear:
-    if st.button("🧹 Svuota PDF Caricati"):
-        st.session_state.uploader_key += 1
-        st.session_state.dati_pdf_in_attesa = []
-        st.rerun()
+
+    with col_clear:
+        if st.button("🧹 Svuota PDF Caricati"):
+            st.session_state.uploader_key += 1
+            st.session_state.dati_pdf_in_attesa = []
+            st.rerun()
 
     if btn_processa:
         if uploaded_files:
-         nuovi_dati = []
+            nuovi_dati = []
 
-        for pdf_file in uploaded_files:
-            dati = estrai_dati_pdf(pdf_file)
-            nuovi_dati.extend(dati)
+            for pdf_file in uploaded_files:
+                dati = estrai_dati_pdf(pdf_file)
+                nuovi_dati.extend(dati)
 
-        if nuovi_dati:
-            st.session_state.dati_pdf_in_attesa = nuovi_dati
+            if nuovi_dati:
+                st.session_state.dati_pdf_in_attesa = nuovi_dati
+            else:
+                st.session_state.dati_pdf_in_attesa = []
+                st.error("Impossibile estrarre dati validi dal PDF.")
         else:
-            st.session_state.dati_pdf_in_attesa = []
-            st.error("Impossibile estrarre dati validi dal PDF.")
-    else:
-        st.warning("Carica prima almeno un file PDF!")
+            st.warning("Carica prima almeno un file PDF!")
 
+    # ---------------------------------------------------------
+    # ANTEPRIMA DATI ESTRATTI PRIMA DEL SALVATAGGIO
+    # ---------------------------------------------------------
+    if st.session_state.dati_pdf_in_attesa:
+        st.subheader("🔍 Anteprima dati estratti")
 
-# ---------------------------------------------------------
-# ANTEPRIMA DATI ESTRATTI PRIMA DEL SALVATAGGIO
-# ---------------------------------------------------------
-if st.session_state.dati_pdf_in_attesa:
+        df_anteprima = pd.DataFrame(st.session_state.dati_pdf_in_attesa)
 
-    st.subheader("🔍 Anteprima dati estratti")
+        st.dataframe(
+            df_anteprima,
+            use_container_width=True,
+            hide_index=True
+        )
 
-    df_anteprima = pd.DataFrame(st.session_state.dati_pdf_in_attesa)
+        st.info(
+            f"Sono state estratte {len(df_anteprima)} righe. "
+            "Controlla i dati prima di salvarli nel database."
+        )
 
-    st.dataframe(
-        df_anteprima,
-        use_container_width=True,
-        hide_index=True
-    )
+        if st.button("✅ Conferma e salva nel database", type="primary"):
+            if inserisci_ordini_cloud(st.session_state.dati_pdf_in_attesa):
+                st.session_state.db_ordini = carica_db_cloud()
+                st.session_state.dati_pdf_in_attesa = []
+                st.success("Ordini salvati nel Cloud con successo!")
 
-    st.info(
-        f"Sono state estratte {len(df_anteprima)} righe. "
-        "Controlla i dati prima di salvarli nel database."
-    )
+    st.divider()
 
-    if st.button("✅ Conferma e salva nel database", type="primary"):
-
-        if inserisci_ordini_cloud(st.session_state.dati_pdf_in_attesa):
-
-            st.session_state.db_ordini = carica_db_cloud()
-            st.session_state.dati_pdf_in_attesa = []
-
-            st.success("Ordini salvati nel Cloud con successo!")
-
-st.divider()
-
-st.subheader("2. Tabella Ordini in Database Cloud")
+    st.subheader("2. Tabella Ordini in Database Cloud")
     
-if st.button("🔄 Ricarica Dati dal Cloud"):
-    st.session_state.db_ordini = carica_db_cloud()
-    st.rerun()
+    if st.button("🔄 Ricarica Dati dal Cloud"):
+        st.session_state.db_ordini = carica_db_cloud()
+        st.rerun()
 
-df_attuale = st.session_state.db_ordini
+    df_attuale = st.session_state.db_ordini
 
-if not df_attuale.empty:
-    st.sidebar.header("🔍 Filtri Tabella")
+    if not df_attuale.empty:
+        st.sidebar.header("🔍 Filtri Tabella")
         
         anni_disponibili = set()
         for data in df_attuale["CONSEGNA"].dropna():
