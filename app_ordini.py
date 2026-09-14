@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import re
 import inspect
+import time
 from rapidfuzz import process, fuzz
 
 from pdf_import import (
@@ -66,6 +67,20 @@ from database import (
 )
 
 from calendar_service import ottieni_visite_calendar
+
+# ---------------------------------------------------------
+# DIAGNOSTICA PRESTAZIONI 5F
+# ---------------------------------------------------------
+_run_start_perf = time.perf_counter()
+
+if "performance_metrics" not in st.session_state:
+    st.session_state.performance_metrics = {}
+
+def registra_tempo(nome, inizio):
+    """Salva in millisecondi l'ultima durata misurata per un'operazione."""
+    durata_ms = (time.perf_counter() - inizio) * 1000
+    st.session_state.performance_metrics[nome] = round(durata_ms, 1)
+    return durata_ms
 
 # ---------------------------------------------------------
 # CALCOLO FUZZY CON CACHE
@@ -138,7 +153,9 @@ with col_h2:
         st.rerun()
 
 if "db_ordini" not in st.session_state:
+    _t_perf = time.perf_counter()
     st.session_state.db_ordini = carica_db_cloud()
+    registra_tempo("Supabase · caricamento iniziale ordini", _t_perf)
 
 if "uploader_key" not in st.session_state:
     st.session_state.uploader_key = 0
@@ -156,16 +173,24 @@ if "select_all_prev_state" not in st.session_state:
     st.session_state.select_all_prev_state = False
 
 if "coppie_ignorate_list" not in st.session_state:
+    _t_perf = time.perf_counter()
     st.session_state.coppie_ignorate_list = carica_coppie_ignorate_cloud()
+    registra_tempo("Supabase · coppie ignorate Fuzzy", _t_perf)
 
 if "clienti_ignorati_visite_list" not in st.session_state:
+    _t_perf = time.perf_counter()
     st.session_state.clienti_ignorati_visite_list = carica_clienti_ignorati_visite_cloud()
+    registra_tempo("Supabase · clienti esclusi Visite", _t_perf)
 
 if "articoli_ignorati_prev_list" not in st.session_state:
+    _t_perf = time.perf_counter()
     st.session_state.articoli_ignorati_prev_list = carica_articoli_ignorati_prev_cloud()
+    registra_tempo("Supabase · esclusioni Previsionale", _t_perf)
 
 if "mappa_custom_calendar" not in st.session_state:
+    _t_perf = time.perf_counter()
     st.session_state.mappa_custom_calendar = carica_mappatura_calendar_cloud()
+    registra_tempo("Supabase · mappatura Calendar", _t_perf)
 
 etichette_tabs = [
     "📋 Database Ordini",
@@ -334,12 +359,15 @@ if not tabs_lazy_supportate or getattr(tab_database, "open", False):
         st.subheader("2. Tabella Ordini in Database Cloud")
         
         if st.button("🔄 Ricarica Dati dal Cloud"):
+            _t_perf = time.perf_counter()
             st.session_state.db_ordini = carica_db_cloud()
+            registra_tempo("Supabase · ricarica manuale ordini", _t_perf)
             st.rerun()
 
         df_attuale = st.session_state.db_ordini
 
         if not df_attuale.empty:
+            _t_db_prep = time.perf_counter()
             st.sidebar.header("🔍 Filtri Tabella")
             
             anni_disponibili = set()
@@ -410,6 +438,9 @@ if not tabs_lazy_supportate or getattr(tab_database, "open", False):
                 if col != "Seleziona"
             ]
 
+            registra_tempo("Database · filtri, ordinamento e preparazione tabella", _t_db_prep)
+
+            _t_editor = time.perf_counter()
             edited_df = st.data_editor(
                 df_display,
                 use_container_width=True,
@@ -424,6 +455,7 @@ if not tabs_lazy_supportate or getattr(tab_database, "open", False):
                 disabled=colonne_bloccate,
                 key="editor_ordini"
             )
+            registra_tempo("Database · creazione data_editor (server)", _t_editor)
 
             col_sel_all, col_unsel_all, col_del, col_exp = st.columns([1.5, 1.5, 1.8, 1.8])
             
@@ -699,10 +731,12 @@ if not tabs_lazy_supportate or getattr(tab_fuzzy, "open", False):
                 for articolo in articoli_unici
             )
 
+            _t_fuzzy = time.perf_counter()
             coppie_candidate = calcola_coppie_fuzzy_cached(
                 articoli_con_conteggi,
                 soglia
             )
+            registra_tempo("Fuzzy · calcolo/copia da cache", _t_fuzzy)
 
             set_ignorate = set(st.session_state.coppie_ignorate_list)
             coppie_trovate = [
@@ -793,10 +827,12 @@ if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
 
         if not df_prev_base.empty:
             giorno_cache_previsionale = pd.Timestamp.now().strftime("%Y-%m-%d")
+            _t_prev = time.perf_counter()
             df_prev_res = calcola_previsionale_cached(
                 df_prev_base,
                 giorno_cache_previsionale
             )
+            registra_tempo("Previsionale · calcolo/copia da cache", _t_prev)
 
             if not df_prev_res.empty:
                 set_prev_ignorati = set(st.session_state.articoli_ignorati_prev_list)
@@ -931,9 +967,11 @@ if not tabs_lazy_supportate or getattr(tab_visite, "open", False):
             # Evitiamo così una chiamata API automatica all'avvio della sessione
             # o durante rerun causati da interazioni nelle altre schede.
             if btn_scan_cal:
+                _t_calendar = time.perf_counter()
                 with st.spinner("Scansione di Google Calendar in corso..."):
                     df_vis_res = ottieni_visite_calendar(list_cli_db, st.session_state.mappa_custom_calendar)
                     st.session_state.df_visite_cache = df_vis_res
+                registra_tempo("Calendar · scansione completa", _t_calendar)
 
             df_vis_display = st.session_state.get("df_visite_cache", pd.DataFrame())
 
@@ -1087,3 +1125,55 @@ if not tabs_lazy_supportate or getattr(tab_visite, "open", False):
                                 st.rerun()
                     else:
                         st.info("Nessuna regola manuale salvata nel Cloud al momento.")
+
+# ---------------------------------------------------------
+# PANNELLO DIAGNOSTICA PRESTAZIONI
+# ---------------------------------------------------------
+registra_tempo("Rerun · tempo Python totale", _run_start_perf)
+
+with st.expander("⚙️ Diagnostica prestazioni", expanded=False):
+    st.caption(
+        "Misure server-side dell'ultimo passaggio eseguito. "
+        "Non includono il tempo di rendering del browser o la latenza visiva della rete."
+    )
+
+    metriche_perf = st.session_state.get("performance_metrics", {})
+
+    if metriche_perf:
+        righe_perf = []
+        for nome, durata_ms in metriche_perf.items():
+            if durata_ms < 50:
+                stato = "🟢"
+            elif durata_ms < 300:
+                stato = "🟡"
+            else:
+                stato = "🔴"
+
+            righe_perf.append({
+                "STATO": stato,
+                "OPERAZIONE": nome,
+                "TEMPO (ms)": durata_ms,
+            })
+
+        df_perf = pd.DataFrame(righe_perf).sort_values(
+            "TEMPO (ms)",
+            ascending=False
+        )
+
+        st.dataframe(
+            df_perf,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.caption(
+            "Indicazione rapida: 🟢 < 50 ms · 🟡 50–299 ms · 🔴 ≥ 300 ms. "
+            "Per chiamate esterne come Supabase e Google Calendar tempi più alti possono essere normali."
+        )
+
+        if st.button("🧹 Azzera misure diagnostiche", key="btn_reset_perf"):
+            st.session_state.performance_metrics = {}
+            st.rerun()
+    else:
+        st.info("Nessuna misura disponibile in questa sessione.")
+
