@@ -13,7 +13,7 @@ st.set_page_config(page_title="Gestionale Ordini Cloud", layout="wide")
 # ---------------------------------------------------------
 # SISTEMA DI AUTENTICAZIONE PASSWORD
 # ---------------------------------------------------------
-APP_PASSWORD = "Cyclamen91!"
+APP_PASSWORD = st.secrets["app"]["password"]
 
 def verifica_password():
     if "autenticato" not in st.session_state:
