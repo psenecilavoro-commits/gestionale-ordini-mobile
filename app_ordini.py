@@ -1127,53 +1127,58 @@ if not tabs_lazy_supportate or getattr(tab_visite, "open", False):
                         st.info("Nessuna regola manuale salvata nel Cloud al momento.")
 
 # ---------------------------------------------------------
-# PANNELLO DIAGNOSTICA PRESTAZIONI
+# PANNELLO DIAGNOSTICA PRESTAZIONI NELLA SIDEBAR
 # ---------------------------------------------------------
 registra_tempo("Rerun · tempo Python totale", _run_start_perf)
 
-with st.expander("⚙️ Diagnostica prestazioni", expanded=False):
-    st.caption(
-        "Misure server-side dell'ultimo passaggio eseguito. "
-        "Non includono il tempo di rendering del browser o la latenza visiva della rete."
-    )
+# La diagnostica compare nella colonna laterale solo quando è attiva
+# la scheda Database Ordini, sotto i filtri e l'ordinamento esistenti.
+if not tabs_lazy_supportate or getattr(tab_database, "open", False):
+    st.sidebar.divider()
 
-    metriche_perf = st.session_state.get("performance_metrics", {})
-
-    if metriche_perf:
-        righe_perf = []
-        for nome, durata_ms in metriche_perf.items():
-            if durata_ms < 50:
-                stato = "🟢"
-            elif durata_ms < 300:
-                stato = "🟡"
-            else:
-                stato = "🔴"
-
-            righe_perf.append({
-                "STATO": stato,
-                "OPERAZIONE": nome,
-                "TEMPO (ms)": durata_ms,
-            })
-
-        df_perf = pd.DataFrame(righe_perf).sort_values(
-            "TEMPO (ms)",
-            ascending=False
-        )
-
-        st.dataframe(
-            df_perf,
-            use_container_width=True,
-            hide_index=True
-        )
-
+    with st.sidebar.expander("⚙️ Diagnostica prestazioni", expanded=False):
         st.caption(
-            "Indicazione rapida: 🟢 < 50 ms · 🟡 50–299 ms · 🔴 ≥ 300 ms. "
-            "Per chiamate esterne come Supabase e Google Calendar tempi più alti possono essere normali."
+            "Misure server-side dell'ultimo passaggio eseguito. "
+            "Non includono il tempo di rendering del browser o la latenza visiva della rete."
         )
 
-        if st.button("🧹 Azzera misure diagnostiche", key="btn_reset_perf"):
-            st.session_state.performance_metrics = {}
-            st.rerun()
-    else:
-        st.info("Nessuna misura disponibile in questa sessione.")
+        metriche_perf = st.session_state.get("performance_metrics", {})
+
+        if metriche_perf:
+            righe_perf = []
+            for nome, durata_ms in metriche_perf.items():
+                if durata_ms < 50:
+                    stato = "🟢"
+                elif durata_ms < 300:
+                    stato = "🟡"
+                else:
+                    stato = "🔴"
+
+                righe_perf.append({
+                    "STATO": stato,
+                    "OPERAZIONE": nome,
+                    "TEMPO (ms)": durata_ms,
+                })
+
+            df_perf = pd.DataFrame(righe_perf).sort_values(
+                "TEMPO (ms)",
+                ascending=False
+            )
+
+            st.dataframe(
+                df_perf,
+                use_container_width=True,
+                hide_index=True
+            )
+
+            st.caption(
+                "Indicazione rapida: 🟢 < 50 ms · 🟡 50–299 ms · 🔴 ≥ 300 ms. "
+                "Per chiamate esterne come Supabase e Google Calendar tempi più alti possono essere normali."
+            )
+
+            if st.button("🧹 Azzera misure diagnostiche", key="btn_reset_perf"):
+                st.session_state.performance_metrics = {}
+                st.rerun()
+        else:
+            st.info("Nessuna misura disponibile in questa sessione.")
 
