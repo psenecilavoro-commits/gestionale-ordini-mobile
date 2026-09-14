@@ -97,7 +97,7 @@ def carica_db_cloud():
         inizio = 0
         
         while True:
-            response = supabase.table("ordini").select("*").range(inizio, inizio + step - 1).execute()
+            response = supabase.table("ordini").select("*").order("id").range(inizio, inizio + step - 1).execute()
             batch = response.data
             if not batch:
                 break
@@ -128,7 +128,7 @@ def carica_db_cloud():
                 if col not in df.columns:
                     df[col] = ""
                     
-            return df[colonne_standard].astype(str).fillna("")
+            return df[colonne_standard].fillna("").astype(str)
     except Exception as e:
         st.error(f"Errore nel caricamento dal Cloud Supabase: {e}")
     return pd.DataFrame(columns=["id", "CLIENTE", "N. ORDINE", "ARTICOLO", "CONSEGNA", "QUANTITÀ", "PREZZO"])
