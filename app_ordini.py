@@ -1177,9 +1177,8 @@ with tab_database:
                             for item_id in righe_da_eliminare["id"].tolist()
                             if str(item_id).strip()
                         ]
-                        for item_id in ids_da_eliminare:
-                            if item_id:
-                                supabase.table("ordini").delete().eq("id", item_id).execute()
+                        if ids_da_eliminare:
+                            supabase.table("ordini").delete().in_("id", ids_da_eliminare).execute()
                         st.session_state.db_ordini = carica_db_cloud()
                         st.session_state.select_all_state = False
                         st.success(f"Eliminate {len(ids_da_eliminare)} righe dal Cloud!")
@@ -1230,9 +1229,10 @@ with tab_database:
                     for item_id in righe_selezionate["id"].tolist()
                     if str(item_id).strip()
                 ]
-                for item_id in ids_da_aggiornare:
-                    if item_id:
-                        supabase.table("ordini").update({"cliente": nome_finale}).eq("id", item_id).execute()
+                if ids_da_aggiornare:
+                    supabase.table("ordini").update(
+                        {"cliente": nome_finale}
+                    ).in_("id", ids_da_aggiornare).execute()
                 st.session_state.db_ordini = carica_db_cloud()
                 st.session_state.select_all_state = False
                 st.success(f"Aggiornate {len(ids_da_aggiornare)} righe con la ragione sociale: '{nome_finale}'!")
@@ -1271,9 +1271,10 @@ with tab_database:
                     for item_id in righe_selezionate["id"].tolist()
                     if str(item_id).strip()
                 ]
-                for item_id in ids_da_aggiornare:
-                    if item_id:
-                        supabase.table("ordini").update({"articolo": art_finale}).eq("id", item_id).execute()
+                if ids_da_aggiornare:
+                    supabase.table("ordini").update(
+                        {"articolo": art_finale}
+                    ).in_("id", ids_da_aggiornare).execute()
                 st.session_state.db_ordini = carica_db_cloud()
                 st.session_state.select_all_state = False
                 st.success(f"Aggiornate {len(ids_da_aggiornare)} righe con l'articolo: '{art_finale}'!")
