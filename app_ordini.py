@@ -839,14 +839,14 @@ st.divider()
 
 st.subheader("2. Tabella Ordini in Database Cloud")
     
-    if st.button("🔄 Ricarica Dati dal Cloud"):
-        st.session_state.db_ordini = carica_db_cloud()
-        st.rerun()
+if st.button("🔄 Ricarica Dati dal Cloud"):
+    st.session_state.db_ordini = carica_db_cloud()
+    st.rerun()
 
 df_attuale = st.session_state.db_ordini
 
-    if not df_attuale.empty:
-        st.sidebar.header("🔍 Filtri Tabella")
+if not df_attuale.empty:
+    st.sidebar.header("🔍 Filtri Tabella")
         
         anni_disponibili = set()
         for data in df_attuale["CONSEGNA"].dropna():
