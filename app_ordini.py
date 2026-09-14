@@ -732,6 +732,9 @@ if "db_ordini" not in st.session_state:
 if "uploader_key" not in st.session_state:
     st.session_state.uploader_key = 0
 
+if "dati_pdf_in_attesa" not in st.session_state:
+    st.session_state.dati_pdf_in_attesa = []
+
 if "select_all_state" not in st.session_state:
     st.session_state.select_all_state = False
 
@@ -781,26 +784,56 @@ with tab_database:
         btn_processa = st.button("⚙️ Processa PDF", type="primary")
         
     with col_clear:
-        if st.button("🧹 Svuota PDF Caricati"):
-            st.session_state.uploader_key += 1
-            st.rerun()
+    if st.button("🧹 Svuota PDF Caricati"):
+        st.session_state.uploader_key += 1
+        st.session_state.dati_pdf_in_attesa = []
+        st.rerun()
 
     if btn_processa:
-        if uploaded_files:
-            nuovi_dati = []
-            for pdf_file in uploaded_files:
-                dati = estrai_dati_pdf(pdf_file)
-                nuovi_dati.extend(dati)
-            
-            if nuovi_dati:
-                if inserisci_ordini_cloud(nuovi_dati):
-                    st.session_state.db_ordini = carica_db_cloud()
-                    st.success(f"Elaborati {len(uploaded_files)} PDF e salvati nel Cloud con successo!")
-                    st.rerun()
-            else:
-                st.error("Impossibile estrarre dati validi dal PDF.")
+    if uploaded_files:
+        nuovi_dati = []
+
+        for pdf_file in uploaded_files:
+            dati = estrai_dati_pdf(pdf_file)
+            nuovi_dati.extend(dati)
+
+        if nuovi_dati:
+            st.session_state.dati_pdf_in_attesa = nuovi_dati
         else:
-            st.warning("Carica prima almeno un file PDF!")
+            st.session_state.dati_pdf_in_attesa = []
+            st.error("Impossibile estrarre dati validi dal PDF.")
+    else:
+        st.warning("Carica prima almeno un file PDF!")
+
+
+# ---------------------------------------------------------
+# ANTEPRIMA DATI ESTRATTI PRIMA DEL SALVATAGGIO
+# ---------------------------------------------------------
+if st.session_state.dati_pdf_in_attesa:
+
+    st.subheader("🔍 Anteprima dati estratti")
+
+    df_anteprima = pd.DataFrame(st.session_state.dati_pdf_in_attesa)
+
+    st.dataframe(
+        df_anteprima,
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.info(
+        f"Sono state estratte {len(df_anteprima)} righe. "
+        "Controlla i dati prima di salvarli nel database."
+    )
+
+    if st.button("✅ Conferma e salva nel database", type="primary"):
+
+        if inserisci_ordini_cloud(st.session_state.dati_pdf_in_attesa):
+
+            st.session_state.db_ordini = carica_db_cloud()
+            st.session_state.dati_pdf_in_attesa = []
+
+            st.success("Ordini salvati nel Cloud con successo!")
 
     st.divider()
 
