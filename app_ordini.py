@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import re
 import inspect
+import importlib
 import time
 from rapidfuzz import process, fuzz
 
@@ -10,7 +11,14 @@ from pdf_import import (
     valida_riga_importazione,
     classifica_righe_importazione,
 )
-from previsionale import calcola_previsionale
+import previsionale as previsionale_module
+
+VERSIONE_MODULO_PREVISIONALE_ATTESA = "6D1"
+
+if getattr(previsionale_module, "VERSIONE_PREVISIONALE", None) != VERSIONE_MODULO_PREVISIONALE_ATTESA:
+    previsionale_module = importlib.reload(previsionale_module)
+
+calcola_previsionale = previsionale_module.calcola_previsionale
 
 st.set_page_config(page_title="Gestionale Ordini Cloud", layout="wide")
 
@@ -129,7 +137,7 @@ def calcola_coppie_fuzzy_cached(articoli_con_conteggi, soglia):
 # ---------------------------------------------------------
 # PREVISIONALE CON CACHE
 # ---------------------------------------------------------
-VERSIONE_CACHE_PREVISIONALE = "6D"
+VERSIONE_CACHE_PREVISIONALE = "6D1"
 
 @st.cache_data(show_spinner=False)
 def calcola_previsionale_cached(df_ordini, giorno_cache, versione_cache):
@@ -839,6 +847,15 @@ if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
             )
             registra_tempo("Previsionale · calcolo/copia da cache", _t_prev)
 
+            colonne_6d_richieste = {"AFFIDABILITÀ", "N. STORICO"}
+            if not df_prev_res.empty and not colonne_6d_richieste.issubset(df_prev_res.columns):
+                calcola_previsionale_cached.clear()
+                df_prev_res = calcola_previsionale_cached(
+                    df_prev_base,
+                    giorno_cache_previsionale,
+                    VERSIONE_CACHE_PREVISIONALE
+                )
+
             if not df_prev_res.empty:
                 set_prev_ignorati = set(st.session_state.articoli_ignorati_prev_list)
                 if set_prev_ignorati:
@@ -889,16 +906,20 @@ if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
                     key="prev_cli_filter"
                 )
 
-                affidabilita_disponibili = ["Tutte"] + [
-                    valore
-                    for valore in ["🟢 Alta", "🟡 Media", "🔴 Bassa"]
-                    if valore in set(df_prev_res_filtered["AFFIDABILITÀ"])
-                ]
-                sel_affidabilita = col_pf3.selectbox(
-                    "Filtra AFFIDABILITÀ:",
-                    affidabilita_disponibili,
-                    key="prev_affidabilita_filter"
-                )
+                if "AFFIDABILITÀ" in df_prev_res_filtered.columns:
+                    affidabilita_disponibili = ["Tutte"] + [
+                        valore
+                        for valore in ["🟢 Alta", "🟡 Media", "🔴 Bassa"]
+                        if valore in set(df_prev_res_filtered["AFFIDABILITÀ"])
+                    ]
+                    sel_affidabilita = col_pf3.selectbox(
+                        "Filtra AFFIDABILITÀ:",
+                        affidabilita_disponibili,
+                        key="prev_affidabilita_filter"
+                    )
+                else:
+                    sel_affidabilita = "Tutte"
+                    col_pf3.caption("⚠️ Affidabilità in aggiornamento")
 
                 df_prev_disp = df_prev_res_filtered.copy()
 
@@ -908,7 +929,7 @@ if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
                 if sel_cli_p != "Tutti":
                     df_prev_disp = df_prev_disp[df_prev_disp["CLIENTE"] == sel_cli_p]
 
-                if sel_affidabilita != "Tutte":
+                if sel_affidabilita != "Tutte" and "AFFIDABILITÀ" in df_prev_disp.columns:
                     df_prev_disp = df_prev_disp[
                         df_prev_disp["AFFIDABILITÀ"] == sel_affidabilita
                     ]

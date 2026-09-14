@@ -2,6 +2,8 @@ import pandas as pd
 from datetime import datetime, timedelta
 from statistics import pstdev
 
+VERSIONE_PREVISIONALE = "6D1"
+
 
 def formatta_giorni(oggi, data_riferimento):
     """
