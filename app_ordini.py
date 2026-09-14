@@ -13,7 +13,7 @@ from pdf_import import (
 )
 import previsionale as previsionale_module
 
-VERSIONE_MODULO_PREVISIONALE_ATTESA = "6G"
+VERSIONE_MODULO_PREVISIONALE_ATTESA = "6H"
 
 if getattr(previsionale_module, "VERSIONE_PREVISIONALE", None) != VERSIONE_MODULO_PREVISIONALE_ATTESA:
     previsionale_module = importlib.reload(previsionale_module)
@@ -137,7 +137,7 @@ def calcola_coppie_fuzzy_cached(articoli_con_conteggi, soglia):
 # ---------------------------------------------------------
 # PREVISIONALE CON CACHE
 # ---------------------------------------------------------
-VERSIONE_CACHE_PREVISIONALE = "6G"
+VERSIONE_CACHE_PREVISIONALE = "6H"
 
 @st.cache_data(show_spinner=False)
 def calcola_previsionale_cached(df_ordini, giorno_cache, versione_cache):
@@ -833,7 +833,7 @@ if not tabs_lazy_supportate or getattr(tab_fuzzy, "open", False):
 if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
     with tab_previsionale:
         st.subheader("🔮 Previsionale Riordini (Mese Corrente & Successivo)")
-        st.markdown("L'algoritmo separa le **consegne storiche** dagli **ordini futuri**. **PROSSIMA CONSEGNA** è la data reale già presente nel database. Media, mediana, regolarità e **N. STORICO** sono ora calcolati sulle **date di consegna storiche distinte**, così più righe dello stesso giorno non vengono scambiate per riordini separati.")
+        st.markdown("L'algoritmo separa le **consegne storiche** dagli **ordini futuri** e usa date storiche distinte per media, mediana e regolarità. La nuova **PRIORITÀ SOLLECITO** distingue i ritardi più credibili dalle segnalazioni che, con uno storico debole, è meglio verificare.")
 
         df_prev_base = st.session_state.db_ordini
 
@@ -847,14 +847,16 @@ if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
             )
             registra_tempo("Previsionale · calcolo/copia da cache", _t_prev)
 
-            colonne_6g_richieste = {
+            colonne_6h_richieste = {
                 "REGOLARITÀ",
                 "AFFIDABILITÀ",
                 "N. STORICO",
                 "FREQ. MEDIANA (GG)",
                 "SCOST. MEDIA/MEDIANA",
+                "PRIORITÀ SOLLECITO",
+                "RITARDO STIMATO (GG)",
             }
-            if not df_prev_res.empty and not colonne_6g_richieste.issubset(df_prev_res.columns):
+            if not df_prev_res.empty and not colonne_6h_richieste.issubset(df_prev_res.columns):
                 calcola_previsionale_cached.clear()
                 df_prev_res = calcola_previsionale_cached(
                     df_prev_base,
@@ -879,9 +881,11 @@ if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
 
                 st.divider()
 
-                col_pf1, col_pf2, col_pf3, col_pf4 = st.columns([1.35, 1.35, 1.15, 1])
+                col_pf1, col_pf2, col_pf3, col_pf4, col_pf5 = st.columns(
+                    [1.15, 1.15, 1.05, 1.15, 0.95]
+                )
 
-                mostra_declassati = col_pf4.checkbox(
+                mostra_declassati = col_pf5.checkbox(
                     "Includi '⚪ Articolo Declassato'",
                     value=False,
                     key="chk_show_decl"
@@ -927,6 +931,21 @@ if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
                     sel_affidabilita = "Tutte"
                     col_pf3.caption("⚠️ Affidabilità in aggiornamento")
 
+                if "PRIORITÀ SOLLECITO" in df_prev_res_filtered.columns:
+                    priorita_disponibili = ["Tutte"] + [
+                        valore
+                        for valore in ["🔴 Alta", "🟠 Media", "⚪ Da verificare"]
+                        if valore in set(df_prev_res_filtered["PRIORITÀ SOLLECITO"])
+                    ]
+                    sel_priorita = col_pf4.selectbox(
+                        "Filtra PRIORITÀ:",
+                        priorita_disponibili,
+                        key="prev_priorita_filter"
+                    )
+                else:
+                    sel_priorita = "Tutte"
+                    col_pf4.caption("⚠️ Priorità in aggiornamento")
+
                 df_prev_disp = df_prev_res_filtered.copy()
 
                 if sel_stato != "Tutti":
@@ -940,14 +959,18 @@ if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
                         df_prev_disp["AFFIDABILITÀ"] == sel_affidabilita
                     ]
 
+                if sel_priorita != "Tutte" and "PRIORITÀ SOLLECITO" in df_prev_disp.columns:
+                    df_prev_disp = df_prev_disp[
+                        df_prev_disp["PRIORITÀ SOLLECITO"] == sel_priorita
+                    ]
+
                 st.caption(f"Righe trovate: **{len(df_prev_disp)}**")
                 st.caption(
-                    "📦 **PROSSIMA CONSEGNA** = data reale già presente nel database · "
-                    "🔮 **STIMA DA STORICO** = previsione basata sulla frequenza media · "
-                    "📅 **MEDIA e MEDIANA** = entrambe calcolate su date storiche distinte · "
-                    "📏 **REGOLARITÀ** = costanza degli intervalli · "
-                    "🎯 **AFFIDABILITÀ** = combina regolarità e quantità di storico · "
-                    "**SCOST. MEDIA/MEDIANA** = differenza reale tra i due metodi"
+                    "☎️ **PRIORITÀ SOLLECITO**: 🔴 Alta = affidabilità Alta, oppure Media con ≥30 gg di ritardo · "
+                    "🟠 Media = affidabilità Media con <30 gg di ritardo · "
+                    "⚪ Da verificare = affidabilità Bassa · "
+                    "**RITARDO STIMATO (GG)** = giorni trascorsi dalla STIMA DA STORICO. "
+                    "La priorità non modifica la previsione."
                 )
 
                 df_prev_edit = df_prev_disp.copy()

@@ -2,7 +2,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from statistics import pstdev, median
 
-VERSIONE_PREVISIONALE = "6G"
+VERSIONE_PREVISIONALE = "6H"
 
 
 def formatta_giorni(oggi, data_riferimento):
@@ -27,6 +27,37 @@ def _stesso_mese(data, mese, anno):
         and data.month == mese
         and data.year == anno
     )
+
+
+def calcola_priorita_sollecito(stato, affidabilita, data_stimata, oggi):
+    """
+    Classifica solo le righe realmente in ritardo.
+
+    Regole 6H:
+    - 🔴 Alta: affidabilità Alta, oppure Media con almeno 30 gg di ritardo
+    - 🟠 Media: affidabilità Media con meno di 30 gg di ritardo
+    - ⚪ Da verificare: affidabilità Bassa
+    - —: riga non in ritardo oppure stima non disponibile
+
+    È un indicatore commerciale e non modifica la previsione.
+    """
+    if data_stimata is None:
+        return "—", None
+
+    ritardo_gg = max((oggi - data_stimata).days, 0)
+
+    if "In Ritardo" not in str(stato):
+        return "—", ritardo_gg
+
+    if affidabilita == "🟢 Alta":
+        return "🔴 Alta", ritardo_gg
+
+    if affidabilita == "🟡 Media":
+        if ritardo_gg >= 30:
+            return "🔴 Alta", ritardo_gg
+        return "🟠 Media", ritardo_gg
+
+    return "⚪ Da verificare", ritardo_gg
 
 
 def calcola_mediana_storica(date_storiche, media_corrente):
@@ -325,10 +356,19 @@ def calcola_previsionale(df_ordini):
             else:
                 periodo_rif = "Mese Successivo"
 
+            priorita_sollecito, ritardo_stimato_gg = calcola_priorita_sollecito(
+                stato,
+                affidabilita,
+                data_stimata,
+                oggi
+            )
+
             previsioni.append({
                 "CLIENTE": cliente,
                 "ARTICOLO": articolo,
                 "STATO": stato,
+                "PRIORITÀ SOLLECITO": priorita_sollecito,
+                "RITARDO STIMATO (GG)": "—",
                 "PERIODO ATTESO": periodo_rif,
                 "GIORNI": giorni_testo,
                 "PROSSIMA CONSEGNA": (
@@ -365,10 +405,20 @@ def calcola_previsionale(df_ordini):
         # PRIORITÀ 2: articolo realmente inattivo
         # -------------------------------------------------
         if articolo_declassato:
+            stato = "⚪ Articolo Declassato"
+            priorita_sollecito, ritardo_stimato_gg = calcola_priorita_sollecito(
+                stato,
+                affidabilita,
+                data_stimata,
+                oggi
+            )
+
             previsioni.append({
                 "CLIENTE": cliente,
                 "ARTICOLO": articolo,
-                "STATO": "⚪ Articolo Declassato",
+                "STATO": stato,
+                "PRIORITÀ SOLLECITO": priorita_sollecito,
+                "RITARDO STIMATO (GG)": "—",
                 "PERIODO ATTESO": "Inattivo (> 1 anno)",
                 "GIORNI": giorni_testo,
                 "PROSSIMA CONSEGNA": (
@@ -416,10 +466,23 @@ def calcola_previsionale(df_ordini):
         else:
             continue
 
+        priorita_sollecito, ritardo_stimato_gg = calcola_priorita_sollecito(
+            stato,
+            affidabilita,
+            data_stimata,
+            oggi
+        )
+
         previsioni.append({
             "CLIENTE": cliente,
             "ARTICOLO": articolo,
             "STATO": stato,
+            "PRIORITÀ SOLLECITO": priorita_sollecito,
+            "RITARDO STIMATO (GG)": (
+                ritardo_stimato_gg
+                if "In Ritardo" in str(stato)
+                else "—"
+            ),
             "PERIODO ATTESO": periodo_rif,
             "GIORNI": giorni_testo,
             "PROSSIMA CONSEGNA": (
