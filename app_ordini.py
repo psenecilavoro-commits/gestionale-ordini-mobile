@@ -155,6 +155,18 @@ if "select_all_visite_state" not in st.session_state:
 if "select_all_prev_state" not in st.session_state:
     st.session_state.select_all_prev_state = False
 
+if "coppie_ignorate_list" not in st.session_state:
+    st.session_state.coppie_ignorate_list = carica_coppie_ignorate_cloud()
+
+if "clienti_ignorati_visite_list" not in st.session_state:
+    st.session_state.clienti_ignorati_visite_list = carica_clienti_ignorati_visite_cloud()
+
+if "articoli_ignorati_prev_list" not in st.session_state:
+    st.session_state.articoli_ignorati_prev_list = carica_articoli_ignorati_prev_cloud()
+
+if "mappa_custom_calendar" not in st.session_state:
+    st.session_state.mappa_custom_calendar = carica_mappatura_calendar_cloud()
+
 etichette_tabs = [
     "📋 Database Ordini",
     "📈 Analisi & Grafici",
@@ -654,9 +666,6 @@ if not tabs_lazy_supportate or getattr(tab_norm_cli, "open", False):
 # =========================================================
 if not tabs_lazy_supportate or getattr(tab_fuzzy, "open", False):
     with tab_fuzzy:
-        if "coppie_ignorate_list" not in st.session_state:
-            st.session_state.coppie_ignorate_list = carica_coppie_ignorate_cloud()
-
         st.subheader("🤖 Rilevamento Automatico Duplicati e Varianti")
         st.markdown("Questa funzione confronta gli articoli in database e trova le varianti quasi identiche per unificarle con un clic.")
 
@@ -777,9 +786,6 @@ if not tabs_lazy_supportate or getattr(tab_fuzzy, "open", False):
 # =========================================================
 if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
     with tab_previsionale:
-        if "articoli_ignorati_prev_list" not in st.session_state:
-            st.session_state.articoli_ignorati_prev_list = carica_articoli_ignorati_prev_cloud()
-
         st.subheader("🔮 Previsionale Riordini (Mese Corrente & Successivo)")
         st.markdown("L'algoritmo analizza la frequenza storica di riordine per ogni coppia **Cliente-Articolo**, i giorni trascorsi dall'ultimo ordine e ti segnala le commesse attese o in ritardo.")
 
@@ -904,12 +910,6 @@ if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
 # =========================================================
 if not tabs_lazy_supportate or getattr(tab_visite, "open", False):
     with tab_visite:
-        if "clienti_ignorati_visite_list" not in st.session_state:
-            st.session_state.clienti_ignorati_visite_list = carica_clienti_ignorati_visite_cloud()
-
-        if "mappa_custom_calendar" not in st.session_state:
-            st.session_state.mappa_custom_calendar = carica_mappatura_calendar_cloud()
-
         st.subheader("📅 Monitoraggio Visite Clienti (Google Calendar)")
         st.markdown("Il sistema scansiona in sola lettura il tuo **Google Calendar**, riconosce i titoli degli eventi associandoli ai clienti del database e calcola da quanti giorni non li visiti.")
 
