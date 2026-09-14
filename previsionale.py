@@ -2,7 +2,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from statistics import pstdev, median
 
-VERSIONE_PREVISIONALE = "6F"
+VERSIONE_PREVISIONALE = "6G"
 
 
 def formatta_giorni(oggi, data_riferimento):
@@ -182,9 +182,19 @@ def calcola_previsionale(df_ordini):
         date_storiche = g_storico["DATA_DT"].tolist()
         date_future = g_futuro["DATA_DT"].tolist()
 
-        regolarita, affidabilita, n_storico = valuta_qualita_storico(date_storiche)
+        # 6G: più righe Cliente-Articolo con la stessa data rappresentano
+        # una sola occasione di riordino ai fini statistici.
+        date_storiche_distinte = sorted(set(date_storiche))
 
-        ultima_storica = date_storiche[-1] if date_storiche else None
+        regolarita, affidabilita, n_storico = valuta_qualita_storico(
+            date_storiche_distinte
+        )
+
+        ultima_storica = (
+            date_storiche_distinte[-1]
+            if date_storiche_distinte
+            else None
+        )
         prossima_consegna = date_future[0] if date_future else None
         ha_ordine_futuro = prossima_consegna is not None
 
@@ -218,10 +228,13 @@ def calcola_previsionale(df_ordini):
         # Frequenza: SOLO consegne storiche già avvenute.
         # Gli ordini futuri non devono alterare la media.
         # -------------------------------------------------
-        if len(date_storiche) > 1:
+        if len(date_storiche_distinte) > 1:
             diffs = [
-                (date_storiche[k] - date_storiche[k - 1]).days
-                for k in range(1, len(date_storiche))
+                (
+                    date_storiche_distinte[k]
+                    - date_storiche_distinte[k - 1]
+                ).days
+                for k in range(1, len(date_storiche_distinte))
             ]
             intervallo_medio = sum(diffs) / len(diffs)
             intervallo_medio = max(intervallo_medio, 15)
@@ -229,9 +242,9 @@ def calcola_previsionale(df_ordini):
             # Manteniamo il default storico già usato dall'app.
             intervallo_medio = 60
 
-        # 6F: mediana solo informativa, calcolata su date storiche distinte.
+        # 6G: anche la mediana usa esattamente la stessa base distinta.
         intervallo_mediano, scostamento_media_mediana = calcola_mediana_storica(
-            date_storiche,
+            date_storiche_distinte,
             intervallo_medio
         )
 
