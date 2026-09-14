@@ -111,6 +111,20 @@ def calcola_coppie_fuzzy_cached(articoli_con_conteggi, soglia):
 
 
 # ---------------------------------------------------------
+# PREVISIONALE CON CACHE
+# ---------------------------------------------------------
+@st.cache_data(show_spinner=False)
+def calcola_previsionale_cached(df_ordini, giorno_cache):
+    """
+    Riutilizza il risultato finché il database e il giorno non cambiano.
+
+    giorno_cache serve esclusivamente a invalidare automaticamente la cache
+    al cambio di data, perché il previsionale dipende da datetime.now().
+    """
+    return calcola_previsionale(df_ordini)
+
+
+# ---------------------------------------------------------
 # INTERFACCIA STREAMLIT A TABS (6 SCHEDE)
 # ---------------------------------------------------------
 col_h1, col_h2 = st.columns([5, 1])
@@ -747,7 +761,11 @@ with tab_previsionale:
     df_prev_base = st.session_state.db_ordini
 
     if not df_prev_base.empty:
-        df_prev_res = calcola_previsionale(df_prev_base)
+        giorno_cache_previsionale = pd.Timestamp.now().strftime("%Y-%m-%d")
+        df_prev_res = calcola_previsionale_cached(
+            df_prev_base,
+            giorno_cache_previsionale
+        )
 
         if not df_prev_res.empty:
             set_prev_ignorati = set(st.session_state.articoli_ignorati_prev_list)
