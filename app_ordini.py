@@ -13,7 +13,7 @@ from pdf_import import (
 )
 import previsionale as previsionale_module
 
-VERSIONE_MODULO_PREVISIONALE_ATTESA = "6D1"
+VERSIONE_MODULO_PREVISIONALE_ATTESA = "6E"
 
 if getattr(previsionale_module, "VERSIONE_PREVISIONALE", None) != VERSIONE_MODULO_PREVISIONALE_ATTESA:
     previsionale_module = importlib.reload(previsionale_module)
@@ -137,7 +137,7 @@ def calcola_coppie_fuzzy_cached(articoli_con_conteggi, soglia):
 # ---------------------------------------------------------
 # PREVISIONALE CON CACHE
 # ---------------------------------------------------------
-VERSIONE_CACHE_PREVISIONALE = "6D1"
+VERSIONE_CACHE_PREVISIONALE = "6E"
 
 @st.cache_data(show_spinner=False)
 def calcola_previsionale_cached(df_ordini, giorno_cache, versione_cache):
@@ -833,7 +833,7 @@ if not tabs_lazy_supportate or getattr(tab_fuzzy, "open", False):
 if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
     with tab_previsionale:
         st.subheader("🔮 Previsionale Riordini (Mese Corrente & Successivo)")
-        st.markdown("L'algoritmo separa le **consegne storiche** dagli **ordini futuri**. **PROSSIMA CONSEGNA** è la data reale già presente nel database; **STIMA DA STORICO** è la previsione matematica. La nuova **AFFIDABILITÀ** indica quanto lo storico è numeroso e regolare, senza modificare la data prevista.")
+        st.markdown("L'algoritmo separa le **consegne storiche** dagli **ordini futuri**. **PROSSIMA CONSEGNA** è la data reale già presente nel database; **STIMA DA STORICO** è la previsione matematica. **REGOLARITÀ** misura quanto sono costanti gli intervalli tra gli ordini, mentre **AFFIDABILITÀ** combina regolarità e quantità dello storico.")
 
         df_prev_base = st.session_state.db_ordini
 
@@ -847,8 +847,8 @@ if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
             )
             registra_tempo("Previsionale · calcolo/copia da cache", _t_prev)
 
-            colonne_6d_richieste = {"AFFIDABILITÀ", "N. STORICO"}
-            if not df_prev_res.empty and not colonne_6d_richieste.issubset(df_prev_res.columns):
+            colonne_6e_richieste = {"REGOLARITÀ", "AFFIDABILITÀ", "N. STORICO"}
+            if not df_prev_res.empty and not colonne_6e_richieste.issubset(df_prev_res.columns):
                 calcola_previsionale_cached.clear()
                 df_prev_res = calcola_previsionale_cached(
                     df_prev_base,
@@ -938,8 +938,8 @@ if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
                 st.caption(
                     "📦 **PROSSIMA CONSEGNA** = data reale già presente nel database · "
                     "🔮 **STIMA DA STORICO** = previsione sulle consegne già avvenute · "
-                    "🎯 **AFFIDABILITÀ** = 🟢 alta con storico ampio e regolare, "
-                    "🟡 media con storico sufficiente, 🔴 bassa con pochi dati o forte variabilità · "
+                    "📏 **REGOLARITÀ** = costanza degli intervalli tra le consegne · "
+                    "🎯 **AFFIDABILITÀ** = combina regolarità e quantità di storico · "
                     "**N. STORICO** = numero di date di consegna storiche distinte"
                 )
 
