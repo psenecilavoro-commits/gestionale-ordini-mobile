@@ -1125,13 +1125,30 @@ with tab_database:
         c2.metric("Clienti Distinti", df_filtrato["CLIENTE"].nunique())
         c3.metric("Articoli Distinti", df_filtrato["ARTICOLO"].nunique())
 
-        df_display = df_filtrato.drop(columns=["id"], errors="ignore").copy()
+        # Manteniamo l'ID Supabase associato direttamente a ogni riga.
+        # L'ID resta nascosto nell'interfaccia ma viene usato per
+        # eliminazioni e aggiornamenti sicuri, indipendentemente da filtri
+        # e ordinamenti.
+        df_display = df_filtrato.copy()
         df_display.insert(0, "Seleziona", st.session_state.select_all_state)
 
+        colonne_bloccate = [
+            col for col in df_display.columns
+            if col != "Seleziona"
+        ]
+
         edited_df = st.data_editor(
-            df_display, 
-            use_container_width=True, 
-            num_rows="dynamic",
+            df_display,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "id": None,
+                "Seleziona": st.column_config.CheckboxColumn(
+                    "Seleziona",
+                    help="Spunta le righe su cui vuoi eseguire un'operazione."
+                ),
+            },
+            disabled=colonne_bloccate,
             key="editor_ordini"
         )
 
@@ -1155,8 +1172,11 @@ with tab_database:
                     st.write("⚠️ **Conferma eliminazione**")
                     st.caption(f"Sei sicuro di voler eliminare **{count_del}** righe dal database Cloud?")
                     if st.button("Sì, elimina definitivamente", type="primary", key="btn_confirm_delete_rows"):
-                        indici_visibili = righe_da_eliminare.index
-                        ids_da_eliminare = df_filtrato.loc[indici_visibili, "id"].tolist()
+                        ids_da_eliminare = [
+                            item_id
+                            for item_id in righe_da_eliminare["id"].tolist()
+                            if str(item_id).strip()
+                        ]
                         for item_id in ids_da_eliminare:
                             if item_id:
                                 supabase.table("ordini").delete().eq("id", item_id).execute()
@@ -1205,8 +1225,11 @@ with tab_database:
             elif not nome_finale:
                 st.warning("Inserisci o seleziona una ragione sociale valida.")
             else:
-                indici_visibili = righe_selezionate.index
-                ids_da_aggiornare = df_filtrato.loc[indici_visibili, "id"].tolist()
+                ids_da_aggiornare = [
+                    item_id
+                    for item_id in righe_selezionate["id"].tolist()
+                    if str(item_id).strip()
+                ]
                 for item_id in ids_da_aggiornare:
                     if item_id:
                         supabase.table("ordini").update({"cliente": nome_finale}).eq("id", item_id).execute()
@@ -1243,8 +1266,11 @@ with tab_database:
             elif not art_finale:
                 st.warning("Inserisci o seleziona un nome articolo valido.")
             else:
-                indici_visibili = righe_selezionate.index
-                ids_da_aggiornare = df_filtrato.loc[indici_visibili, "id"].tolist()
+                ids_da_aggiornare = [
+                    item_id
+                    for item_id in righe_selezionate["id"].tolist()
+                    if str(item_id).strip()
+                ]
                 for item_id in ids_da_aggiornare:
                     if item_id:
                         supabase.table("ordini").update({"articolo": art_finale}).eq("id", item_id).execute()
