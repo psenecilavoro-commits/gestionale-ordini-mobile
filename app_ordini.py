@@ -67,6 +67,50 @@ from database import (
 from calendar_service import ottieni_visite_calendar
 
 # ---------------------------------------------------------
+# CALCOLO FUZZY CON CACHE
+# ---------------------------------------------------------
+@st.cache_data(show_spinner=False)
+def calcola_coppie_fuzzy_cached(articoli_con_conteggi, soglia):
+    """
+    Calcola le potenziali coppie fuzzy e memorizza il risultato.
+
+    La cache dipende solo dagli articoli, dai relativi conteggi e dalla soglia.
+    Le coppie ignorate vengono filtrate successivamente, così un semplice
+    ignora/ripristina non costringe a rifare tutti i confronti.
+    """
+    articoli_unici = [articolo for articolo, _ in articoli_con_conteggi]
+    conteggi = dict(articoli_con_conteggi)
+
+    coppie_candidate = []
+    processati = set()
+
+    for idx, art_a in enumerate(articoli_unici):
+        if art_a in processati:
+            continue
+
+        match = process.extract(
+            art_a,
+            articoli_unici[idx + 1:],
+            scorer=fuzz.token_sort_ratio,
+            score_cutoff=soglia
+        )
+
+        for art_b, score, _ in match:
+            coppia_key = tuple(sorted([art_a, art_b]))
+            coppie_candidate.append({
+                "key": coppia_key,
+                "Articolo A": art_a,
+                "Articolo B": art_b,
+                "Somiglianza": f"{round(score)}%",
+                "Conteggio A": conteggi.get(art_a, 0),
+                "Conteggio B": conteggi.get(art_b, 0)
+            })
+            processati.add(art_b)
+
+    return coppie_candidate
+
+
+# ---------------------------------------------------------
 # INTERFACCIA STREAMLIT A TABS (6 SCHEDE)
 # ---------------------------------------------------------
 col_h1, col_h2 = st.columns([5, 1])
@@ -601,32 +645,26 @@ with tab_fuzzy:
         articoli_unici = sorted([a for a in df_work["ARTICOLO"].unique() if str(a).strip()])
         st.info(f"Articoli distinti da analizzare: **{len(articoli_unici)}**")
 
-        coppie_trovate = []
-        processati = set()
-        set_ignorate = set(st.session_state.coppie_ignorate_list)
+        # Prepariamo una firma compatta dei dati rilevanti.
+        # Se articoli, conteggi e soglia non cambiano, Streamlit riutilizza
+        # il risultato fuzzy già calcolato invece di rifare tutti i confronti.
+        conteggi_articoli = df_work["ARTICOLO"].value_counts()
+        articoli_con_conteggi = tuple(
+            (articolo, int(conteggi_articoli.get(articolo, 0)))
+            for articolo in articoli_unici
+        )
 
-        for idx, art_a in enumerate(articoli_unici):
-            if art_a in processati:
-                continue
-            match = process.extract(
-                art_a, 
-                articoli_unici[idx+1:], 
-                scorer=fuzz.token_sort_ratio, 
-                score_cutoff=soglia
-            )
-            for art_b, score, _ in match:
-                coppia_key = tuple(sorted([art_a, art_b]))
-                
-                if coppia_key not in set_ignorate:
-                    coppie_trovate.append({
-                        "key": coppia_key,
-                        "Articolo A": art_a,
-                        "Articolo B": art_b,
-                        "Somiglianza": f"{round(score)}%",
-                        "Conteggio A": len(df_work[df_work["ARTICOLO"] == art_a]),
-                        "Conteggio B": len(df_work[df_work["ARTICOLO"] == art_b])
-                    })
-                processati.add(art_b)
+        coppie_candidate = calcola_coppie_fuzzy_cached(
+            articoli_con_conteggi,
+            soglia
+        )
+
+        set_ignorate = set(st.session_state.coppie_ignorate_list)
+        coppie_trovate = [
+            coppia
+            for coppia in coppie_candidate
+            if coppia["key"] not in set_ignorate
+        ]
 
         col_bar1, col_bar2, col_bar3 = st.columns([1.8, 1.8, 2.2])
 
