@@ -820,6 +820,10 @@ with tab_database:
 
             for pdf_file in uploaded_files:
                 dati = estrai_dati_pdf(pdf_file)
+
+                for riga in dati:
+                    riga["FILE SORGENTE"] = pdf_file.name
+
                 nuovi_dati.extend(dati)
 
             if nuovi_dati:
@@ -837,6 +841,12 @@ with tab_database:
         st.subheader("🔍 Anteprima dati estratti")
 
         df_anteprima = pd.DataFrame(st.session_state.dati_pdf_in_attesa)
+
+        if "FILE SORGENTE" in df_anteprima.columns:
+            colonne_anteprima = ["FILE SORGENTE"] + [
+                c for c in df_anteprima.columns if c != "FILE SORGENTE"
+            ]
+            df_anteprima = df_anteprima[colonne_anteprima]
 
         st.dataframe(
             df_anteprima,
