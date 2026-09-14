@@ -790,8 +790,8 @@ with col_clear:
         st.rerun()
 
     if btn_processa:
-    if uploaded_files:
-        nuovi_dati = []
+        if uploaded_files:
+         nuovi_dati = []
 
         for pdf_file in uploaded_files:
             dati = estrai_dati_pdf(pdf_file)
