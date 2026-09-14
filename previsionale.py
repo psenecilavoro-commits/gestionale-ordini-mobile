@@ -2,6 +2,22 @@ import pandas as pd
 from datetime import datetime, timedelta
 
 
+def formatta_giorni(oggi, ultima_data):
+    """
+    Restituisce una dicitura leggibile rispetto all'ultima consegna:
+    - "24 gg trascorsi" se la consegna è passata
+    - "Oggi" se è oggi
+    - "Tra 11 gg" se la consegna è futura
+    """
+    differenza = (ultima_data - oggi).days
+
+    if differenza > 0:
+        return f"Tra {differenza} gg"
+    if differenza == 0:
+        return "Oggi"
+    return f"{abs(differenza)} gg trascorsi"
+
+
 # ---------------------------------------------------------
 # CALCOLO ALGORITMO PREVISIONALE RIORDINI
 # ---------------------------------------------------------
@@ -38,6 +54,7 @@ def calcola_previsionale(df_ordini):
         ultimo_prezzo = g["PREZZO"].iloc[-1]
 
         gg_trascorsi = (oggi - ultima_data).days
+        giorni_testo = formatta_giorni(oggi, ultima_data)
 
         if len(date_consegne) > 1:
             diffs = [(date_consegne[k] - date_consegne[k-1]).days for k in range(1, len(date_consegne))]
@@ -64,7 +81,7 @@ def calcola_previsionale(df_ordini):
                 "ARTICOLO": articolo,
                 "STATO": stato,
                 "PERIODO ATTESO": periodo_rif,
-                "GG TRASCORSI": gg_trascorsi,
+                "GIORNI": giorni_testo,
                 "DATA STIMATA RIORDINO": data_stimata.strftime("%d/%m/%Y"),
                 "FREQ. MEDIA (GG)": int(intervallo_medio),
                 "ULTIMA CONSEGNA": ultima_data.strftime("%d/%m/%Y"),
@@ -87,7 +104,7 @@ def calcola_previsionale(df_ordini):
                 "ARTICOLO": articolo,
                 "STATO": stato,
                 "PERIODO ATTESO": periodo_rif,
-                "GG TRASCORSI": gg_trascorsi,
+                "GIORNI": giorni_testo,
                 "DATA STIMATA RIORDINO": data_stimata.strftime("%d/%m/%Y"),
                 "FREQ. MEDIA (GG)": int(intervallo_medio),
                 "ULTIMA CONSEGNA": ultima_data.strftime("%d/%m/%Y"),
