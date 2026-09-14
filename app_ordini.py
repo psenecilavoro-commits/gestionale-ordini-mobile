@@ -47,15 +47,10 @@ def init_supabase() -> Client:
     try:
         url = st.secrets["supabase"]["url"]
         key = st.secrets["supabase"]["key"]
-        
-        # Configurazione degli headers per le nuove API Keys
-        headers = {
-            "apikey": key,
-            "Authorization": f"Bearer {key}"
-        }
-        
+
+        # Le nuove chiavi sb_secret_ vanno usate come API key.
+        # Non devono essere inviate come Bearer token JWT.
         client = create_client(url, key)
-        client.postgrest.auth(key)
         return client
     except Exception as e:
         st.error(f"Errore di connessione a Supabase: {e}")
