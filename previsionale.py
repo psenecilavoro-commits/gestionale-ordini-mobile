@@ -1,5 +1,6 @@
 import pandas as pd
 from datetime import datetime, timedelta
+from statistics import pstdev
 
 
 def formatta_giorni(oggi, data_riferimento):
@@ -24,6 +25,50 @@ def _stesso_mese(data, mese, anno):
         and data.month == mese
         and data.year == anno
     )
+
+
+def valuta_affidabilita(date_storiche):
+    """
+    Valuta quanto è solida la STIMA DA STORICO senza cambiare l'algoritmo
+    che calcola la data prevista.
+
+    La valutazione usa:
+    - numero di date storiche DISTINTE;
+    - regolarità degli intervalli fra le consegne (coefficiente di variazione).
+
+    Soglie volutamente prudenti:
+    - Alta: almeno 4 consegne distinte e variabilità <= 30%
+    - Media: almeno 3 consegne distinte e variabilità <= 60%
+    - Bassa: storico insufficiente o molto irregolare
+    """
+    date_distinte = sorted(set(date_storiche))
+    n_storico = len(date_distinte)
+
+    if n_storico < 3:
+        return "🔴 Bassa", n_storico
+
+    intervalli = [
+        (date_distinte[i] - date_distinte[i - 1]).days
+        for i in range(1, n_storico)
+        if (date_distinte[i] - date_distinte[i - 1]).days > 0
+    ]
+
+    if len(intervalli) < 2:
+        return "🔴 Bassa", n_storico
+
+    media_intervalli = sum(intervalli) / len(intervalli)
+    if media_intervalli <= 0:
+        return "🔴 Bassa", n_storico
+
+    variabilita = pstdev(intervalli) / media_intervalli
+
+    if n_storico >= 4 and variabilita <= 0.30:
+        return "🟢 Alta", n_storico
+
+    if variabilita <= 0.60:
+        return "🟡 Media", n_storico
+
+    return "🔴 Bassa", n_storico
 
 
 # ---------------------------------------------------------
@@ -76,6 +121,8 @@ def calcola_previsionale(df_ordini):
 
         date_storiche = g_storico["DATA_DT"].tolist()
         date_future = g_futuro["DATA_DT"].tolist()
+
+        affidabilita, n_storico = valuta_affidabilita(date_storiche)
 
         ultima_storica = date_storiche[-1] if date_storiche else None
         prossima_consegna = date_future[0] if date_future else None
@@ -215,6 +262,8 @@ def calcola_previsionale(df_ordini):
                     if data_stimata is not None
                     else "N/D"
                 ),
+                "AFFIDABILITÀ": affidabilita,
+                "N. STORICO": n_storico,
                 "FREQ. MEDIA (GG)": int(intervallo_medio),
                 "ULTIMA CONSEGNA": (
                     ultima_storica.strftime("%d/%m/%Y")
@@ -246,6 +295,8 @@ def calcola_previsionale(df_ordini):
                     if data_stimata is not None
                     else "N/D"
                 ),
+                "AFFIDABILITÀ": affidabilita,
+                "N. STORICO": n_storico,
                 "FREQ. MEDIA (GG)": int(intervallo_medio),
                 "ULTIMA CONSEGNA": (
                     ultima_storica.strftime("%d/%m/%Y")
@@ -288,6 +339,8 @@ def calcola_previsionale(df_ordini):
                 if data_stimata is not None
                 else "N/D"
             ),
+            "AFFIDABILITÀ": affidabilita,
+            "N. STORICO": n_storico,
             "FREQ. MEDIA (GG)": int(intervallo_medio),
             "ULTIMA CONSEGNA": (
                 ultima_storica.strftime("%d/%m/%Y")

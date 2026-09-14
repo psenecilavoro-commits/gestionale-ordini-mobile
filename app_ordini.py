@@ -129,7 +129,7 @@ def calcola_coppie_fuzzy_cached(articoli_con_conteggi, soglia):
 # ---------------------------------------------------------
 # PREVISIONALE CON CACHE
 # ---------------------------------------------------------
-VERSIONE_CACHE_PREVISIONALE = "6C"
+VERSIONE_CACHE_PREVISIONALE = "6D"
 
 @st.cache_data(show_spinner=False)
 def calcola_previsionale_cached(df_ordini, giorno_cache, versione_cache):
@@ -825,7 +825,7 @@ if not tabs_lazy_supportate or getattr(tab_fuzzy, "open", False):
 if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
     with tab_previsionale:
         st.subheader("🔮 Previsionale Riordini (Mese Corrente & Successivo)")
-        st.markdown("L'algoritmo separa le **consegne storiche** dagli **ordini futuri**: la frequenza viene calcolata solo sullo storico. Per le righe **Già Ordinato**, **PROSSIMA CONSEGNA** mostra la data reale presente nel database, mentre **STIMA DA STORICO** mostra la previsione matematica.")
+        st.markdown("L'algoritmo separa le **consegne storiche** dagli **ordini futuri**. **PROSSIMA CONSEGNA** è la data reale già presente nel database; **STIMA DA STORICO** è la previsione matematica. La nuova **AFFIDABILITÀ** indica quanto lo storico è numeroso e regolare, senza modificare la data prevista.")
 
         df_prev_base = st.session_state.db_ordini
 
@@ -856,20 +856,49 @@ if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
 
                 st.divider()
 
-                col_pf1, col_pf2, col_pf3 = st.columns([1.5, 1.5, 1])
+                col_pf1, col_pf2, col_pf3, col_pf4 = st.columns([1.35, 1.35, 1.15, 1])
 
-                mostra_declassati = col_pf3.checkbox("Includi '⚪ Articolo Declassato'", value=False, key="chk_show_decl")
+                mostra_declassati = col_pf4.checkbox(
+                    "Includi '⚪ Articolo Declassato'",
+                    value=False,
+                    key="chk_show_decl"
+                )
 
                 if not mostra_declassati:
-                    df_prev_res_filtered = df_prev_res[~df_prev_res["STATO"].str.contains("Declassato")].copy()
+                    df_prev_res_filtered = df_prev_res[
+                        ~df_prev_res["STATO"].str.contains("Declassato")
+                    ].copy()
                 else:
                     df_prev_res_filtered = df_prev_res.copy()
 
-                stati_disponibili = ["Tutti"] + sorted(list(df_prev_res_filtered["STATO"].unique()))
-                sel_stato = col_pf1.selectbox("Filtra per STATO:", stati_disponibili, key="prev_stato_filter")
+                stati_disponibili = ["Tutti"] + sorted(
+                    list(df_prev_res_filtered["STATO"].unique())
+                )
+                sel_stato = col_pf1.selectbox(
+                    "Filtra per STATO:",
+                    stati_disponibili,
+                    key="prev_stato_filter"
+                )
 
-                clienti_prev = ["Tutti"] + sorted(list(df_prev_res_filtered["CLIENTE"].unique()))
-                sel_cli_p = col_pf2.selectbox("Filtra per CLIENTE:", clienti_prev, key="prev_cli_filter")
+                clienti_prev = ["Tutti"] + sorted(
+                    list(df_prev_res_filtered["CLIENTE"].unique())
+                )
+                sel_cli_p = col_pf2.selectbox(
+                    "Filtra per CLIENTE:",
+                    clienti_prev,
+                    key="prev_cli_filter"
+                )
+
+                affidabilita_disponibili = ["Tutte"] + [
+                    valore
+                    for valore in ["🟢 Alta", "🟡 Media", "🔴 Bassa"]
+                    if valore in set(df_prev_res_filtered["AFFIDABILITÀ"])
+                ]
+                sel_affidabilita = col_pf3.selectbox(
+                    "Filtra AFFIDABILITÀ:",
+                    affidabilita_disponibili,
+                    key="prev_affidabilita_filter"
+                )
 
                 df_prev_disp = df_prev_res_filtered.copy()
 
@@ -879,10 +908,18 @@ if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
                 if sel_cli_p != "Tutti":
                     df_prev_disp = df_prev_disp[df_prev_disp["CLIENTE"] == sel_cli_p]
 
+                if sel_affidabilita != "Tutte":
+                    df_prev_disp = df_prev_disp[
+                        df_prev_disp["AFFIDABILITÀ"] == sel_affidabilita
+                    ]
+
                 st.caption(f"Righe trovate: **{len(df_prev_disp)}**")
                 st.caption(
-                    "📦 **PROSSIMA CONSEGNA** = data reale di un ordine futuro già presente nel database · "
-                    "🔮 **STIMA DA STORICO** = previsione calcolata sulla frequenza delle consegne già avvenute"
+                    "📦 **PROSSIMA CONSEGNA** = data reale già presente nel database · "
+                    "🔮 **STIMA DA STORICO** = previsione sulle consegne già avvenute · "
+                    "🎯 **AFFIDABILITÀ** = 🟢 alta con storico ampio e regolare, "
+                    "🟡 media con storico sufficiente, 🔴 bassa con pochi dati o forte variabilità · "
+                    "**N. STORICO** = numero di date di consegna storiche distinte"
                 )
 
                 df_prev_edit = df_prev_disp.copy()
