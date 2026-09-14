@@ -13,7 +13,7 @@ from pdf_import import (
 )
 import previsionale as previsionale_module
 
-VERSIONE_MODULO_PREVISIONALE_ATTESA = "6E"
+VERSIONE_MODULO_PREVISIONALE_ATTESA = "6F"
 
 if getattr(previsionale_module, "VERSIONE_PREVISIONALE", None) != VERSIONE_MODULO_PREVISIONALE_ATTESA:
     previsionale_module = importlib.reload(previsionale_module)
@@ -137,7 +137,7 @@ def calcola_coppie_fuzzy_cached(articoli_con_conteggi, soglia):
 # ---------------------------------------------------------
 # PREVISIONALE CON CACHE
 # ---------------------------------------------------------
-VERSIONE_CACHE_PREVISIONALE = "6E"
+VERSIONE_CACHE_PREVISIONALE = "6F"
 
 @st.cache_data(show_spinner=False)
 def calcola_previsionale_cached(df_ordini, giorno_cache, versione_cache):
@@ -833,7 +833,7 @@ if not tabs_lazy_supportate or getattr(tab_fuzzy, "open", False):
 if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
     with tab_previsionale:
         st.subheader("🔮 Previsionale Riordini (Mese Corrente & Successivo)")
-        st.markdown("L'algoritmo separa le **consegne storiche** dagli **ordini futuri**. **PROSSIMA CONSEGNA** è la data reale già presente nel database; **STIMA DA STORICO** è la previsione matematica. **REGOLARITÀ** misura quanto sono costanti gli intervalli tra gli ordini, mentre **AFFIDABILITÀ** combina regolarità e quantità dello storico.")
+        st.markdown("L'algoritmo separa le **consegne storiche** dagli **ordini futuri**. **PROSSIMA CONSEGNA** è la data reale già presente nel database; **STIMA DA STORICO** continua a usare la frequenza media attuale. In 6F la **MEDIANA** viene mostrata solo come confronto, senza cambiare previsioni, stati o date stimate.")
 
         df_prev_base = st.session_state.db_ordini
 
@@ -847,8 +847,14 @@ if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
             )
             registra_tempo("Previsionale · calcolo/copia da cache", _t_prev)
 
-            colonne_6e_richieste = {"REGOLARITÀ", "AFFIDABILITÀ", "N. STORICO"}
-            if not df_prev_res.empty and not colonne_6e_richieste.issubset(df_prev_res.columns):
+            colonne_6f_richieste = {
+                "REGOLARITÀ",
+                "AFFIDABILITÀ",
+                "N. STORICO",
+                "FREQ. MEDIANA (GG)",
+                "SCOST. MEDIA/MEDIANA",
+            }
+            if not df_prev_res.empty and not colonne_6f_richieste.issubset(df_prev_res.columns):
                 calcola_previsionale_cached.clear()
                 df_prev_res = calcola_previsionale_cached(
                     df_prev_base,
@@ -937,10 +943,11 @@ if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
                 st.caption(f"Righe trovate: **{len(df_prev_disp)}**")
                 st.caption(
                     "📦 **PROSSIMA CONSEGNA** = data reale già presente nel database · "
-                    "🔮 **STIMA DA STORICO** = previsione sulle consegne già avvenute · "
-                    "📏 **REGOLARITÀ** = costanza degli intervalli tra le consegne · "
+                    "🔮 **STIMA DA STORICO** = previsione attuale basata sulla media · "
+                    "📏 **REGOLARITÀ** = costanza degli intervalli · "
                     "🎯 **AFFIDABILITÀ** = combina regolarità e quantità di storico · "
-                    "**N. STORICO** = numero di date di consegna storiche distinte"
+                    "📊 **FREQ. MEDIANA** = confronto informativo su date storiche distinte · "
+                    "**SCOST. MEDIA/MEDIANA** = differenza assoluta e percentuale tra i due valori"
                 )
 
                 df_prev_edit = df_prev_disp.copy()

@@ -1,8 +1,8 @@
 import pandas as pd
 from datetime import datetime, timedelta
-from statistics import pstdev
+from statistics import pstdev, median
 
-VERSIONE_PREVISIONALE = "6E"
+VERSIONE_PREVISIONALE = "6F"
 
 
 def formatta_giorni(oggi, data_riferimento):
@@ -27,6 +27,43 @@ def _stesso_mese(data, mese, anno):
         and data.month == mese
         and data.year == anno
     )
+
+
+def calcola_mediana_storica(date_storiche, media_corrente):
+    """
+    Calcola la mediana degli intervalli tra DATE STORICHE DISTINTE.
+
+    È un dato puramente informativo:
+    - non modifica la frequenza media attuale;
+    - non modifica STIMA DA STORICO;
+    - non modifica STATO / PERIODO ATTESO.
+
+    Applica lo stesso minimo prudenziale di 15 giorni usato dalla media,
+    così il confronto resta leggibile e coerente.
+    """
+    date_distinte = sorted(set(date_storiche))
+
+    if len(date_distinte) < 2:
+        return None, "N/D"
+
+    intervalli = [
+        (date_distinte[i] - date_distinte[i - 1]).days
+        for i in range(1, len(date_distinte))
+        if (date_distinte[i] - date_distinte[i - 1]).days > 0
+    ]
+
+    if not intervalli:
+        return None, "N/D"
+
+    mediana_gg = max(float(median(intervalli)), 15.0)
+
+    if media_corrente is None or media_corrente <= 0:
+        return mediana_gg, "N/D"
+
+    delta_gg = abs(float(media_corrente) - mediana_gg)
+    delta_pct = (delta_gg / float(media_corrente)) * 100
+
+    return mediana_gg, f"{int(round(delta_gg))} gg ({delta_pct:.0f}%)"
 
 
 def valuta_qualita_storico(date_storiche):
@@ -192,6 +229,12 @@ def calcola_previsionale(df_ordini):
             # Manteniamo il default storico già usato dall'app.
             intervallo_medio = 60
 
+        # 6F: mediana solo informativa, calcolata su date storiche distinte.
+        intervallo_mediano, scostamento_media_mediana = calcola_mediana_storica(
+            date_storiche,
+            intervallo_medio
+        )
+
         # La previsione matematica parte SOLO dall'ultima consegna storica.
         data_stimata = (
             ultima_storica + timedelta(days=int(intervallo_medio))
@@ -289,6 +332,12 @@ def calcola_previsionale(df_ordini):
                 "AFFIDABILITÀ": affidabilita,
                 "N. STORICO": n_storico,
                 "FREQ. MEDIA (GG)": int(intervallo_medio),
+                "FREQ. MEDIANA (GG)": (
+                    int(round(intervallo_mediano))
+                    if intervallo_mediano is not None
+                    else "N/D"
+                ),
+                "SCOST. MEDIA/MEDIANA": scostamento_media_mediana,
                 "ULTIMA CONSEGNA": (
                     ultima_storica.strftime("%d/%m/%Y")
                     if ultima_storica is not None
@@ -323,6 +372,12 @@ def calcola_previsionale(df_ordini):
                 "AFFIDABILITÀ": affidabilita,
                 "N. STORICO": n_storico,
                 "FREQ. MEDIA (GG)": int(intervallo_medio),
+                "FREQ. MEDIANA (GG)": (
+                    int(round(intervallo_mediano))
+                    if intervallo_mediano is not None
+                    else "N/D"
+                ),
+                "SCOST. MEDIA/MEDIANA": scostamento_media_mediana,
                 "ULTIMA CONSEGNA": (
                     ultima_storica.strftime("%d/%m/%Y")
                     if ultima_storica is not None
@@ -368,6 +423,12 @@ def calcola_previsionale(df_ordini):
             "AFFIDABILITÀ": affidabilita,
             "N. STORICO": n_storico,
             "FREQ. MEDIA (GG)": int(intervallo_medio),
+            "FREQ. MEDIANA (GG)": (
+                int(round(intervallo_mediano))
+                if intervallo_mediano is not None
+                else "N/D"
+            ),
+            "SCOST. MEDIA/MEDIANA": scostamento_media_mediana,
             "ULTIMA CONSEGNA": (
                 ultima_storica.strftime("%d/%m/%Y")
                 if ultima_storica is not None
