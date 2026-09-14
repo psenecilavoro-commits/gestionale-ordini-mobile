@@ -129,14 +129,18 @@ def calcola_coppie_fuzzy_cached(articoli_con_conteggi, soglia):
 # ---------------------------------------------------------
 # PREVISIONALE CON CACHE
 # ---------------------------------------------------------
-@st.cache_data(show_spinner=False)
-def calcola_previsionale_cached(df_ordini, giorno_cache):
-    """
-    Riutilizza il risultato finché il database e il giorno non cambiano.
+VERSIONE_CACHE_PREVISIONALE = "6A3"
 
-    giorno_cache serve esclusivamente a invalidare automaticamente la cache
-    al cambio di data, perché il previsionale dipende da datetime.now().
+@st.cache_data(show_spinner=False)
+def calcola_previsionale_cached(df_ordini, giorno_cache, versione_cache):
     """
+    Riutilizza il risultato finché database, giorno e versione del calcolo
+    non cambiano.
+
+    versione_cache evita che Streamlit possa riutilizzare un DataFrame
+    calcolato con una versione precedente di previsionale.py.
+    """
+    _ = versione_cache
     return calcola_previsionale(df_ordini)
 
 
@@ -821,7 +825,7 @@ if not tabs_lazy_supportate or getattr(tab_fuzzy, "open", False):
 if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
     with tab_previsionale:
         st.subheader("🔮 Previsionale Riordini (Mese Corrente & Successivo)")
-        st.markdown("L'algoritmo analizza la frequenza storica di riordine per ogni coppia **Cliente-Articolo**, i giorni trascorsi dall'ultimo ordine e ti segnala le commesse attese o in ritardo.")
+        st.markdown("L'algoritmo analizza la frequenza storica di riordine per ogni coppia **Cliente-Articolo**, la distanza dall'ultima consegna registrata e ti segnala le commesse attese o in ritardo.")
 
         df_prev_base = st.session_state.db_ordini
 
@@ -830,7 +834,8 @@ if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
             _t_prev = time.perf_counter()
             df_prev_res = calcola_previsionale_cached(
                 df_prev_base,
-                giorno_cache_previsionale
+                giorno_cache_previsionale,
+                VERSIONE_CACHE_PREVISIONALE
             )
             registra_tempo("Previsionale · calcolo/copia da cache", _t_prev)
 
