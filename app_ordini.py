@@ -639,7 +639,7 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
                             if parole_summary and (parole_summary.issubset(parole_cliente) or parole_cliente.issubset(parole_summary)):
                                 cliente_abbinato = cliente_orig
                                 break
-                            elif fuzz.partial_ratio(summary_clean, cliente_clean) >= 70:
+                            elif fuzz.partial_ratio(summary_clean, cliente_clean) >= 85:
                                 cliente_abbinato = cliente_orig
                                 break
 
