@@ -840,7 +840,10 @@ with tab_visite:
             st.write("")
             btn_scan_cal = st.button("🔄 Scansiona Google Calendar", type="primary", key="btn_scan_cal")
 
-        if btn_scan_cal or "df_visite_cache" not in st.session_state:
+        # La scansione di Google Calendar parte solo su richiesta esplicita.
+        # Evitiamo così una chiamata API automatica all'avvio della sessione
+        # o durante rerun causati da interazioni nelle altre schede.
+        if btn_scan_cal:
             with st.spinner("Scansione di Google Calendar in corso..."):
                 df_vis_res = ottieni_visite_calendar(list_cli_db, st.session_state.mappa_custom_calendar)
                 st.session_state.df_visite_cache = df_vis_res
