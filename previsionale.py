@@ -205,7 +205,12 @@ def calcola_previsionale(df_ordini):
                 "STATO": stato,
                 "PERIODO ATTESO": periodo_rif,
                 "GIORNI": giorni_testo,
-                "DATA STIMATA RIORDINO": (
+                "PROSSIMA CONSEGNA": (
+                    prossima_consegna.strftime("%d/%m/%Y")
+                    if prossima_consegna is not None
+                    else "N/D"
+                ),
+                "STIMA DA STORICO": (
                     data_stimata.strftime("%d/%m/%Y")
                     if data_stimata is not None
                     else "N/D"
@@ -231,7 +236,12 @@ def calcola_previsionale(df_ordini):
                 "STATO": "⚪ Articolo Declassato",
                 "PERIODO ATTESO": "Inattivo (> 1 anno)",
                 "GIORNI": giorni_testo,
-                "DATA STIMATA RIORDINO": (
+                "PROSSIMA CONSEGNA": (
+                    prossima_consegna.strftime("%d/%m/%Y")
+                    if prossima_consegna is not None
+                    else "N/D"
+                ),
+                "STIMA DA STORICO": (
                     data_stimata.strftime("%d/%m/%Y")
                     if data_stimata is not None
                     else "N/D"
@@ -268,7 +278,12 @@ def calcola_previsionale(df_ordini):
             "STATO": stato,
             "PERIODO ATTESO": periodo_rif,
             "GIORNI": giorni_testo,
-            "DATA STIMATA RIORDINO": (
+            "PROSSIMA CONSEGNA": (
+                prossima_consegna.strftime("%d/%m/%Y")
+                if prossima_consegna is not None
+                else "N/D"
+            ),
+            "STIMA DA STORICO": (
                 data_stimata.strftime("%d/%m/%Y")
                 if data_stimata is not None
                 else "N/D"
@@ -287,7 +302,7 @@ def calcola_previsionale(df_ordini):
 
     if not df_prev.empty:
         df_prev = df_prev.sort_values(
-            by=["STATO", "DATA STIMATA RIORDINO"]
+            by=["STATO", "STIMA DA STORICO"]
         )
 
     return df_prev

@@ -129,7 +129,7 @@ def calcola_coppie_fuzzy_cached(articoli_con_conteggi, soglia):
 # ---------------------------------------------------------
 # PREVISIONALE CON CACHE
 # ---------------------------------------------------------
-VERSIONE_CACHE_PREVISIONALE = "6B"
+VERSIONE_CACHE_PREVISIONALE = "6C"
 
 @st.cache_data(show_spinner=False)
 def calcola_previsionale_cached(df_ordini, giorno_cache, versione_cache):
@@ -825,7 +825,7 @@ if not tabs_lazy_supportate or getattr(tab_fuzzy, "open", False):
 if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
     with tab_previsionale:
         st.subheader("🔮 Previsionale Riordini (Mese Corrente & Successivo)")
-        st.markdown("L'algoritmo separa le **consegne storiche** dagli **ordini futuri**: la frequenza di riordine viene calcolata solo sullo storico, mentre gli ordini con consegna futura vengono riconosciuti come **Già Ordinato** quando rilevanti per il periodo.")
+        st.markdown("L'algoritmo separa le **consegne storiche** dagli **ordini futuri**: la frequenza viene calcolata solo sullo storico. Per le righe **Già Ordinato**, **PROSSIMA CONSEGNA** mostra la data reale presente nel database, mentre **STIMA DA STORICO** mostra la previsione matematica.")
 
         df_prev_base = st.session_state.db_ordini
 
@@ -880,6 +880,10 @@ if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
                     df_prev_disp = df_prev_disp[df_prev_disp["CLIENTE"] == sel_cli_p]
 
                 st.caption(f"Righe trovate: **{len(df_prev_disp)}**")
+                st.caption(
+                    "📦 **PROSSIMA CONSEGNA** = data reale di un ordine futuro già presente nel database · "
+                    "🔮 **STIMA DA STORICO** = previsione calcolata sulla frequenza delle consegne già avvenute"
+                )
 
                 df_prev_edit = df_prev_disp.copy()
                 df_prev_edit.insert(0, "Seleziona", st.session_state.select_all_prev_state)
