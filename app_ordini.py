@@ -129,7 +129,7 @@ def calcola_coppie_fuzzy_cached(articoli_con_conteggi, soglia):
 # ---------------------------------------------------------
 # PREVISIONALE CON CACHE
 # ---------------------------------------------------------
-VERSIONE_CACHE_PREVISIONALE = "6A3"
+VERSIONE_CACHE_PREVISIONALE = "6B"
 
 @st.cache_data(show_spinner=False)
 def calcola_previsionale_cached(df_ordini, giorno_cache, versione_cache):
@@ -825,7 +825,7 @@ if not tabs_lazy_supportate or getattr(tab_fuzzy, "open", False):
 if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
     with tab_previsionale:
         st.subheader("🔮 Previsionale Riordini (Mese Corrente & Successivo)")
-        st.markdown("L'algoritmo analizza la frequenza storica di riordine per ogni coppia **Cliente-Articolo**, la distanza dall'ultima consegna registrata e ti segnala le commesse attese o in ritardo.")
+        st.markdown("L'algoritmo separa le **consegne storiche** dagli **ordini futuri**: la frequenza di riordine viene calcolata solo sullo storico, mentre gli ordini con consegna futura vengono riconosciuti come **Già Ordinato** quando rilevanti per il periodo.")
 
         df_prev_base = st.session_state.db_ordini
 
