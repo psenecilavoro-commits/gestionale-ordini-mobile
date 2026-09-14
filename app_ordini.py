@@ -205,6 +205,43 @@ def svuota_coppie_ignorate_cloud():
         return False
 
 # ---------------------------------------------------------
+# GESTIONE PERMANENTE MAPPATURA CALENDAR SU CLOUD
+# ---------------------------------------------------------
+def carica_mappatura_calendar_cloud():
+    try:
+        res = supabase.table("mappatura_calendar").select("parola_chiave, cliente").execute()
+        return {r["parola_chiave"]: r["cliente"] for r in res.data}
+    except Exception as e:
+        return {}
+
+def aggiungi_mappatura_calendar_cloud(parola_chiave, cliente):
+    try:
+        supabase.table("mappatura_calendar").upsert({
+            "parola_chiave": parola_chiave,
+            "cliente": cliente
+        }, on_conflict="parola_chiave").execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nel salvataggio della regola: {e}")
+        return False
+
+def rimuovi_mappatura_calendar_cloud(parola_chiave):
+    try:
+        supabase.table("mappatura_calendar").delete().eq("parola_chiave", parola_chiave).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nella rimozione della regola: {e}")
+        return False
+
+def svuota_mappatura_calendar_cloud():
+    try:
+        supabase.table("mappatura_calendar").delete().neq("id", 0).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nello svuotamento delle regole: {e}")
+        return False
+        
+# ---------------------------------------------------------
 # GESTIONE PERMANENTE CLIENTE IGNORATI VISITE SU CLOUD
 # ---------------------------------------------------------
 def carica_clienti_ignorati_visite_cloud():
@@ -739,7 +776,7 @@ if "articoli_ignorati_prev_list" not in st.session_state:
     st.session_state.articoli_ignorati_prev_list = carica_articoli_ignorati_prev_cloud()
 
 if "mappa_custom_calendar" not in st.session_state:
-    st.session_state.mappa_custom_calendar = {}
+    st.session_state.mappa_custom_calendar = carica_mappatura_calendar_cloud()
 
 tab_database, tab_grafici, tab_norm_cli, tab_fuzzy, tab_previsionale, tab_visite = st.tabs([
     "📋 Database Ordini", 
@@ -1473,18 +1510,20 @@ with tab_visite:
                     btn_add_rule = st.button("➕ Aggiungi Regola", key="btn_add_map")
 
                 if btn_add_rule:
-                    if txt_keyword.strip() and sel_cli_map != "-- Seleziona --":
-                        st.session_state.mappa_custom_calendar[txt_keyword.strip()] = sel_cli_map
-                        st.session_state.df_visite_cache = pd.DataFrame()  # Forza il ricalcolo al prossimo scan
-                        st.success(f"Regola aggiunta: '{txt_keyword.strip()}' ➔ '{sel_cli_map}'")
-                        st.rerun()
+                    kw_clean = txt_keyword.strip()
+                    if kw_clean and sel_cli_map != "-- Seleziona --":
+                        if aggiungi_mappatura_calendar_cloud(kw_clean, sel_cli_map):
+                            st.session_state.mappa_custom_calendar = carica_mappatura_calendar_cloud()
+                            st.session_state.df_visite_cache = pd.DataFrame()
+                            st.success(f"Regola salvata nel Cloud: '{kw_clean}' ➔ '{sel_cli_map}'")
+                            st.rerun()
                     else:
                         st.warning("Inserisci sia la parola chiave che il cliente da abbinare.")
 
                 st.divider()
 
                 # Gestione e Rimozione Regole Esistenti
-                st.subheader("📋 Regole di Abbinamento Attive")
+                st.subheader("📋 Regole di Abbinamento Salvate nel Cloud")
                 if st.session_state.mappa_custom_calendar:
                     opzioni_regole = [f"'{kw}' ➔ '{cl}'" for kw, cl in st.session_state.mappa_custom_calendar.items()]
                     
@@ -1502,19 +1541,19 @@ with tab_visite:
 
                     if btn_del_single_rule:
                         if regola_da_rimuovere != "-- Seleziona regola --":
-                            # Estraggo la parola chiave prima della freccia
                             kw_target = regola_da_rimuovere.split(" ➔ ")[0].strip("'")
-                            if kw_target in st.session_state.mappa_custom_calendar:
-                                del st.session_state.mappa_custom_calendar[kw_target]
+                            if rimuovi_mappatura_calendar_cloud(kw_target):
+                                st.session_state.mappa_custom_calendar = carica_mappatura_calendar_cloud()
                                 st.session_state.df_visite_cache = pd.DataFrame()
-                                st.success(f"Regola per '{kw_target}' rimossa con successo!")
+                                st.success(f"Regola per '{kw_target}' eliminata!")
                                 st.rerun()
 
                     st.write("")
                     if st.button("🧹 Svuota TUTTE le regole di mappatura", key="btn_clear_all_rules"):
-                        st.session_state.mappa_custom_calendar = {}
-                        st.session_state.df_visite_cache = pd.DataFrame()
-                        st.success("Tutte le regole di mappatura sono state eliminate!")
-                        st.rerun()
+                        if svuota_mappatura_calendar_cloud():
+                            st.session_state.mappa_custom_calendar = {}
+                            st.session_state.df_visite_cache = pd.DataFrame()
+                            st.success("Tutte le regole di mappatura sono state eliminate dal Cloud!")
+                            st.rerun()
                 else:
-                    st.info("Nessuna regola manuale impostata al momento.")
+                    st.info("Nessuna regola manuale salvata nel Cloud al momento.")
