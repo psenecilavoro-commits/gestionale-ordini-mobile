@@ -88,7 +88,7 @@ def get_calendar_service():
         return None
 
 # ---------------------------------------------------------
-# CARICAMENTO / SALVATAGGIO DATABASE CLOUD (PAGINATO)
+# CARICAMENTO DATABASE CLOUD (PAGINAZIONE ILLIMITATA)
 # ---------------------------------------------------------
 def carica_db_cloud():
     try:
@@ -99,11 +99,16 @@ def carica_db_cloud():
         while True:
             response = supabase.table("ordini").select("*").range(inizio, inizio + step - 1).execute()
             batch = response.data
+            
             if not batch:
                 break
+                
             tutti_i_dati.extend(batch)
+            
+            # Se il batch restituito ha meno di 1000 elementi, siamo all'ultima pagina
             if len(batch) < step:
                 break
+                
             inizio += step
 
         if tutti_i_dati:
@@ -132,36 +137,6 @@ def carica_db_cloud():
     except Exception as e:
         st.error(f"Errore nel caricamento dal Cloud Supabase: {e}")
     return pd.DataFrame(columns=["id", "CLIENTE", "N. ORDINE", "ARTICOLO", "CONSEGNA", "QUANTITÀ", "PREZZO"])
-
-def inserisci_ordini_cloud(nuovi_dati):
-    try:
-        dati_db = []
-        for d in nuovi_dati:
-            dati_db.append({
-                "cliente": d.get("CLIENTE", ""),
-                "n_ordine": d.get("N. ORDINE", ""),
-                "articolo": d.get("ARTICOLO", ""),
-                "consegna": d.get("CONSEGNA", ""),
-                "quantita": d.get("QUANTITÀ", ""),
-                "prezzo": d.get("PREZZO", "")
-            })
-        supabase.table("ordini").insert(dati_db).execute()
-        return True
-    except Exception as e:
-        st.error(f"Errore nel salvataggio sul Cloud: {e}")
-        return False
-
-def rinomina_articolo_cloud(vecchio_nome, nuovo_nome, cliente=None):
-    try:
-        query = supabase.table("ordini").update({"articolo": nuovo_nome}).eq("articolo", vecchio_nome)
-        if cliente:
-            query = query.eq("cliente", cliente)
-        query.execute()
-        return True
-    except Exception as e:
-        st.error(f"Errore nell'aggiornamento dell'articolo sul Cloud: {e}")
-        return False
-
 # ---------------------------------------------------------
 # GESTIONE PERMANENTE COPPIE IGNORATE SU CLOUD
 # ---------------------------------------------------------
