@@ -494,6 +494,83 @@ def estrai_dati_pdf(pdf_file):
 
     return righe_estratte
 
+
+# ---------------------------------------------------------
+# CONTROLLO DUPLICATI PRIMA DEL SALVATAGGIO
+# ---------------------------------------------------------
+def classifica_righe_importazione(nuovi_dati, df_esistente):
+    """
+    Classifica ogni riga estratta dal PDF senza modificare il database.
+
+    Stati:
+    - 🟢 NUOVO: nessuna corrispondenza esatta nel database.
+    - 🔴 GIÀ PRESENTE: tutti i campi principali coincidono.
+    - 🟡 DA VERIFICARE: stesso cliente + stesso numero ordine già presenti,
+      ma almeno uno degli altri campi è diverso.
+
+    Il controllo è volutamente conservativo:
+    non usa fuzzy matching e non modifica/scarta dati in base a somiglianze.
+    """
+
+    campi_confronto = [
+        "CLIENTE",
+        "N. ORDINE",
+        "ARTICOLO",
+        "CONSEGNA",
+        "QUANTITÀ",
+        "PREZZO",
+    ]
+
+    def normalizza_testo(valore):
+        if valore is None:
+            return ""
+        return re.sub(r"\s+", " ", str(valore)).strip().upper()
+
+    righe_db = []
+    if df_esistente is not None and not df_esistente.empty:
+        for _, riga in df_esistente.iterrows():
+            righe_db.append({
+                campo: normalizza_testo(riga.get(campo, ""))
+                for campo in campi_confronto
+            })
+
+    risultati = []
+
+    for riga_originale in nuovi_dati:
+        riga = dict(riga_originale)
+
+        riga_norm = {
+            campo: normalizza_testo(riga.get(campo, ""))
+            for campo in campi_confronto
+        }
+
+        duplicato_esatto = any(
+            all(db_row[campo] == riga_norm[campo] for campo in campi_confronto)
+            for db_row in righe_db
+        )
+
+        if duplicato_esatto:
+            stato = "🔴 GIÀ PRESENTE"
+        else:
+            stesso_ordine = any(
+                db_row["CLIENTE"] == riga_norm["CLIENTE"]
+                and db_row["N. ORDINE"] == riga_norm["N. ORDINE"]
+                and riga_norm["CLIENTE"] != ""
+                and riga_norm["N. ORDINE"] != ""
+                for db_row in righe_db
+            )
+
+            if stesso_ordine:
+                stato = "🟡 DA VERIFICARE"
+            else:
+                stato = "🟢 NUOVO"
+
+        riga["STATO"] = stato
+        risultati.append(riga)
+
+    return risultati
+
+
 # ---------------------------------------------------------
 # CALCOLO ALGORITMO PREVISIONALE RIORDINI
 # ---------------------------------------------------------
@@ -827,7 +904,10 @@ with tab_database:
                 nuovi_dati.extend(dati)
 
             if nuovi_dati:
-                st.session_state.dati_pdf_in_attesa = nuovi_dati
+                st.session_state.dati_pdf_in_attesa = classifica_righe_importazione(
+                    nuovi_dati,
+                    st.session_state.db_ordini
+                )
             else:
                 st.session_state.dati_pdf_in_attesa = []
                 st.error("Impossibile estrarre dati validi dal PDF.")
@@ -842,11 +922,15 @@ with tab_database:
 
         df_anteprima = pd.DataFrame(st.session_state.dati_pdf_in_attesa)
 
-        if "FILE SORGENTE" in df_anteprima.columns:
-            colonne_anteprima = ["FILE SORGENTE"] + [
-                c for c in df_anteprima.columns if c != "FILE SORGENTE"
-            ]
-            df_anteprima = df_anteprima[colonne_anteprima]
+        colonne_prioritarie = [
+            c for c in ["FILE SORGENTE", "STATO"]
+            if c in df_anteprima.columns
+        ]
+        altre_colonne = [
+            c for c in df_anteprima.columns
+            if c not in colonne_prioritarie
+        ]
+        df_anteprima = df_anteprima[colonne_prioritarie + altre_colonne]
 
         st.dataframe(
             df_anteprima,
@@ -854,16 +938,49 @@ with tab_database:
             hide_index=True
         )
 
+        conteggio_nuove = int((df_anteprima["STATO"] == "🟢 NUOVO").sum()) if "STATO" in df_anteprima.columns else len(df_anteprima)
+        conteggio_presenti = int((df_anteprima["STATO"] == "🔴 GIÀ PRESENTE").sum()) if "STATO" in df_anteprima.columns else 0
+        conteggio_verifica = int((df_anteprima["STATO"] == "🟡 DA VERIFICARE").sum()) if "STATO" in df_anteprima.columns else 0
+
         st.info(
-            f"Sono state estratte {len(df_anteprima)} righe. "
-            "Controlla i dati prima di salvarli nel database."
+            f"Righe estratte: {len(df_anteprima)} | "
+            f"🟢 Nuove: {conteggio_nuove} | "
+            f"🔴 Già presenti: {conteggio_presenti} | "
+            f"🟡 Da verificare: {conteggio_verifica}"
         )
 
-        if st.button("✅ Conferma e salva nel database", type="primary"):
-            if inserisci_ordini_cloud(st.session_state.dati_pdf_in_attesa):
-                st.session_state.db_ordini = carica_db_cloud()
-                st.session_state.dati_pdf_in_attesa = []
-                st.success("Ordini salvati nel Cloud con successo!")
+        if conteggio_presenti > 0:
+            st.warning(
+                "Le righe 🔴 GIÀ PRESENTE non verranno reinserite nel database."
+            )
+
+        if conteggio_verifica > 0:
+            st.warning(
+                "Le righe 🟡 DA VERIFICARE hanno lo stesso cliente e numero ordine "
+                "di righe già presenti, ma dati differenti. Verranno salvate se confermi: "
+                "controllale prima di procedere."
+            )
+
+        righe_da_salvare = [
+            riga for riga in st.session_state.dati_pdf_in_attesa
+            if riga.get("STATO") != "🔴 GIÀ PRESENTE"
+        ]
+
+        if righe_da_salvare:
+            if st.button("✅ Conferma e salva nel database", type="primary"):
+                if inserisci_ordini_cloud(righe_da_salvare):
+                    st.session_state.db_ordini = carica_db_cloud()
+                    st.session_state.dati_pdf_in_attesa = []
+                    st.success(
+                        f"Salvate {len(righe_da_salvare)} righe nel Cloud. "
+                        f"Escluse {conteggio_presenti} righe già presenti."
+                    )
+                    st.rerun()
+        else:
+            st.success(
+                "Tutte le righe estratte risultano già presenti nel database. "
+                "Non c'è nulla da salvare."
+            )
 
     st.divider()
 
