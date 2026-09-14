@@ -1462,21 +1462,59 @@ with tab_visite:
             with st.expander("🔗 Mappatura Manuale / Sinonimi Titoli Calendar"):
                 st.caption("Se su Google Calendar scrivi nomi abbreviati (es. 'MARTIGNONI' invece del nome completo), puoi associare qui la parola chiave alla ragione sociale esatta.")
                 
+                # Aggiunta nuova regola
                 c_map1, c_map2, c_map3 = st.columns([2, 2, 1])
                 txt_keyword = c_map1.text_input("Parola chiave in Calendar (es. MARTIGNONI):", key="txt_kw_cal")
                 sel_cli_map = c_map2.selectbox("Cliente Corrispondente nel DB:", ["-- Seleziona --"] + list_cli_db, key="sel_cli_map")
 
-                if c_map3.button("➕ Aggiungi Regola", key="btn_add_map"):
+                with c_map3:
+                    st.write("")
+                    st.write("")
+                    btn_add_rule = st.button("➕ Aggiungi Regola", key="btn_add_map")
+
+                if btn_add_rule:
                     if txt_keyword.strip() and sel_cli_map != "-- Seleziona --":
                         st.session_state.mappa_custom_calendar[txt_keyword.strip()] = sel_cli_map
-                        st.success(f"Regola aggiunta: '{txt_keyword.strip()}' -> '{sel_cli_map}'")
+                        st.session_state.df_visite_cache = pd.DataFrame()  # Forza il ricalcolo al prossimo scan
+                        st.success(f"Regola aggiunta: '{txt_keyword.strip()}' ➔ '{sel_cli_map}'")
                         st.rerun()
+                    else:
+                        st.warning("Inserisci sia la parola chiave che il cliente da abbinare.")
 
+                st.divider()
+
+                # Gestione e Rimozione Regole Esistenti
+                st.subheader("📋 Regole di Abbinamento Attive")
                 if st.session_state.mappa_custom_calendar:
-                    st.write("📋 Regole di abbinamento attive:")
-                    for kw, cl in list(st.session_state.mappa_custom_calendar.items()):
-                        st.text(f"• '{kw}' ➔ '{cl}'")
-        else:
-            st.info("Fai clic su 'Scansiona Google Calendar' per caricare i dati delle visite.")
-    else:
-        st.warning("Database vuoto. Carica dei PDF per sincronizzare le visite.")
+                    opzioni_regole = [f"'{kw}' ➔ '{cl}'" for kw, cl in st.session_state.mappa_custom_calendar.items()]
+                    
+                    c_del1, c_del2 = st.columns([3, 1])
+                    regola_da_rimuovere = c_del1.selectbox(
+                        "Seleziona una regola da eliminare:", 
+                        ["-- Seleziona regola --"] + sorted(opzioni_regole), 
+                        key="sel_rule_to_delete"
+                    )
+
+                    with c_del2:
+                        st.write("")
+                        st.write("")
+                        btn_del_single_rule = st.button("🗑️ Rimuovi Regola", key="btn_del_rule")
+
+                    if btn_del_single_rule:
+                        if regola_da_rimuovere != "-- Seleziona regola --":
+                            # Estraggo la parola chiave prima della freccia
+                            kw_target = regola_da_rimuovere.split(" ➔ ")[0].strip("'")
+                            if kw_target in st.session_state.mappa_custom_calendar:
+                                del st.session_state.mappa_custom_calendar[kw_target]
+                                st.session_state.df_visite_cache = pd.DataFrame()
+                                st.success(f"Regola per '{kw_target}' rimossa con successo!")
+                                st.rerun()
+
+                    st.write("")
+                    if st.button("🧹 Svuota TUTTE le regole di mappatura", key="btn_clear_all_rules"):
+                        st.session_state.mappa_custom_calendar = {}
+                        st.session_state.df_visite_cache = pd.DataFrame()
+                        st.success("Tutte le regole di mappatura sono state eliminate!")
+                        st.rerun()
+                else:
+                    st.info("Nessuna regola manuale impostata al momento.")
