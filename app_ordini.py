@@ -644,7 +644,7 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
                                 break
 
                 if cliente_abbinato:
-                    if data_evento > oggi:
+                    if data_evento >= oggi.replace(hour=0, minute=0, second=0, microsecond=0):
                         if cliente_abbinato not in visite_future or data_evento < visite_future[cliente_abbinato]:
                             visite_future[cliente_abbinato] = data_evento
                     else:
