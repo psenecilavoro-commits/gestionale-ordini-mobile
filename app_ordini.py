@@ -495,6 +495,68 @@ def estrai_dati_pdf(pdf_file):
     return righe_estratte
 
 
+
+# ---------------------------------------------------------
+# VALIDAZIONE CONSERVATIVA DEI DATI ESTRATTI
+# ---------------------------------------------------------
+def valida_riga_importazione(riga):
+    """
+    Restituisce una lista di avvisi senza modificare né bloccare la riga.
+    La validazione è volutamente prudente: segnala solo campi mancanti
+    o formati chiaramente anomali.
+    """
+
+    avvisi = []
+
+    cliente = str(riga.get("CLIENTE", "") or "").strip()
+    n_ordine = str(riga.get("N. ORDINE", "") or "").strip()
+    articolo = str(riga.get("ARTICOLO", "") or "").strip()
+    consegna = str(riga.get("CONSEGNA", "") or "").strip()
+    quantita = str(riga.get("QUANTITÀ", "") or "").strip()
+    prezzo = str(riga.get("PREZZO", "") or "").strip()
+
+    if not cliente:
+        avvisi.append("Cliente mancante")
+
+    if not n_ordine:
+        avvisi.append("N. ordine mancante")
+
+    if not articolo:
+        avvisi.append("Articolo mancante")
+
+    if not consegna:
+        avvisi.append("Consegna mancante")
+    else:
+        try:
+            datetime.strptime(consegna, "%d/%m/%Y")
+        except ValueError:
+            avvisi.append("Data consegna non valida")
+
+    if not quantita:
+        avvisi.append("Quantità mancante")
+    else:
+        qta_norm = quantita.replace(".", "").replace(",", ".").strip()
+        try:
+            qta_num = float(qta_norm)
+            if qta_num <= 0:
+                avvisi.append("Quantità non positiva")
+        except ValueError:
+            avvisi.append("Quantità non valida")
+
+    if not prezzo:
+        avvisi.append("Prezzo mancante")
+    else:
+        prezzo_norm = prezzo.replace("€", "").replace(".", "").replace(",", ".").strip()
+        try:
+            prezzo_num = float(prezzo_norm)
+            if prezzo_num < 0:
+                avvisi.append("Prezzo negativo")
+        except ValueError:
+            avvisi.append("Prezzo non valido")
+
+    return avvisi
+
+
 # ---------------------------------------------------------
 # CONTROLLO DUPLICATI PRIMA DEL SALVATAGGIO
 # ---------------------------------------------------------
@@ -566,6 +628,10 @@ def classifica_righe_importazione(nuovi_dati, df_esistente):
                 stato = "🟢 NUOVO"
 
         riga["STATO"] = stato
+
+        avvisi = valida_riga_importazione(riga)
+        riga["AVVISI"] = " | ".join(avvisi) if avvisi else "✅ OK"
+
         risultati.append(riga)
 
     return risultati
@@ -923,7 +989,7 @@ with tab_database:
         df_anteprima = pd.DataFrame(st.session_state.dati_pdf_in_attesa)
 
         colonne_prioritarie = [
-            c for c in ["FILE SORGENTE", "STATO"]
+            c for c in ["FILE SORGENTE", "STATO", "AVVISI"]
             if c in df_anteprima.columns
         ]
         altre_colonne = [
@@ -941,13 +1007,21 @@ with tab_database:
         conteggio_nuove = int((df_anteprima["STATO"] == "🟢 NUOVO").sum()) if "STATO" in df_anteprima.columns else len(df_anteprima)
         conteggio_presenti = int((df_anteprima["STATO"] == "🔴 GIÀ PRESENTE").sum()) if "STATO" in df_anteprima.columns else 0
         conteggio_verifica = int((df_anteprima["STATO"] == "🟡 DA VERIFICARE").sum()) if "STATO" in df_anteprima.columns else 0
+        conteggio_avvisi = int((df_anteprima["AVVISI"] != "✅ OK").sum()) if "AVVISI" in df_anteprima.columns else 0
 
         st.info(
             f"Righe estratte: {len(df_anteprima)} | "
             f"🟢 Nuove: {conteggio_nuove} | "
             f"🔴 Già presenti: {conteggio_presenti} | "
-            f"🟡 Da verificare: {conteggio_verifica}"
+            f"🟡 Da verificare: {conteggio_verifica} | "
+            f"⚠️ Con avvisi: {conteggio_avvisi}"
         )
+
+        if conteggio_avvisi > 0:
+            st.warning(
+                "Alcune righe hanno campi mancanti o formati sospetti. "
+                "Gli avvisi sono solo informativi: nessuna riga viene bloccata automaticamente."
+            )
 
         if conteggio_presenti > 0:
             st.warning(
