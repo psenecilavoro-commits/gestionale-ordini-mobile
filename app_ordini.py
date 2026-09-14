@@ -1,0 +1,1491 @@
+import streamlit as st
+import pandas as pd
+import re
+from datetime import datetime, timedelta
+from supabase import create_client, Client
+from rapidfuzz import process, fuzz
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+
+from pdf_import import (
+    estrai_dati_pdf,
+    valida_riga_importazione,
+    classifica_righe_importazione,
+)
+
+st.set_page_config(page_title="Gestionale Ordini Cloud", layout="wide")
+
+# ---------------------------------------------------------
+# SISTEMA DI AUTENTICAZIONE PASSWORD
+# ---------------------------------------------------------
+APP_PASSWORD = st.secrets["app"]["password"]
+
+def verifica_password():
+    if "autenticato" not in st.session_state:
+        st.session_state.autenticato = False
+
+    if not st.session_state.autenticato:
+        st.title("🔒 Accesso Riservato")
+        st.subheader("Gestionale Ordini & Monitoraggio Visite")
+        
+        pwd_input = st.text_input("Inserisci la password di accesso:", type="password", key="login_pwd_input")
+        btn_login = st.button("Accedi", type="primary")
+
+        if btn_login:
+            if pwd_input == APP_PASSWORD:
+                st.session_state.autenticato = True
+                st.success("Accesso effettuato!")
+                st.rerun()
+            else:
+                st.error("Password errata. Riprova.")
+        return False
+    return True
+
+if not verifica_password():
+    st.stop()
+
+# ---------------------------------------------------------
+# CONFIGURAZIONE CONNESSIONE SUPABASE CLOUD (AGGIORNATA)
+# ---------------------------------------------------------
+@st.cache_resource
+def init_supabase() -> Client:
+    try:
+        url = st.secrets["supabase"]["url"]
+        key = st.secrets["supabase"]["key"]
+
+        # Le nuove chiavi sb_secret_ vanno usate come API key.
+        # Non devono essere inviate come Bearer token JWT.
+        client = create_client(url, key)
+        return client
+    except Exception as e:
+        st.error(f"Errore di connessione a Supabase: {e}")
+        return None
+
+supabase = init_supabase()
+
+# ---------------------------------------------------------
+# CONNESSIONE GOOGLE CALENDAR API (VIA SERVICE ACCOUNT)
+# ---------------------------------------------------------
+SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
+
+@st.cache_resource
+def get_calendar_service():
+    try:
+        if "gcp_service_account" in st.secrets:
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            # Normalizzazione automatica dei ritorni a capo per evitare Invalid JWT Signature
+            if "private_key" in creds_dict:
+                creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+            
+            creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+            service = build('calendar', 'v3', credentials=creds)
+            return service
+        else:
+            st.warning("Credenziali 'gcp_service_account' non trovate nei Secrets di Streamlit.")
+            return None
+    except Exception as e:
+        st.error(f"Errore di connessione a Google Calendar API: {e}")
+        return None
+
+# ---------------------------------------------------------
+# CARICAMENTO / SALVATAGGIO DATABASE CLOUD (PAGINATO)
+# ---------------------------------------------------------
+def carica_db_cloud():
+    try:
+        tutti_i_dati = []
+        step = 1000
+        inizio = 0
+        
+        while True:
+            response = supabase.table("ordini").select("*").order("id").range(inizio, inizio + step - 1).execute()
+            batch = response.data
+            if not batch:
+                break
+            tutti_i_dati.extend(batch)
+            if len(batch) < step:
+                break
+            inizio += step
+
+        if tutti_i_dati:
+            df = pd.DataFrame(tutti_i_dati)
+            
+            mappa_colonne = {
+                'cliente': 'CLIENTE',
+                'n_ordine': 'N. ORDINE',
+                'articolo': 'ARTICOLO',
+                'consegna': 'CONSEGNA',
+                'quantita': 'QUANTITÀ',
+                'prezzo': 'PREZZO'
+            }
+            df = df.rename(columns=mappa_colonne)
+            
+            cols_to_drop = [c for c in ['created_at'] if c in df.columns]
+            if cols_to_drop:
+                df = df.drop(columns=cols_to_drop)
+
+            colonne_standard = ["id", "CLIENTE", "N. ORDINE", "ARTICOLO", "CONSEGNA", "QUANTITÀ", "PREZZO"]
+            for col in colonne_standard:
+                if col not in df.columns:
+                    df[col] = ""
+                    
+            return df[colonne_standard].fillna("").astype(str)
+    except Exception as e:
+        st.error(f"Errore nel caricamento dal Cloud Supabase: {e}")
+    return pd.DataFrame(columns=["id", "CLIENTE", "N. ORDINE", "ARTICOLO", "CONSEGNA", "QUANTITÀ", "PREZZO"])
+
+def inserisci_ordini_cloud(nuovi_dati):
+    try:
+        dati_db = []
+        for d in nuovi_dati:
+            dati_db.append({
+                "cliente": d.get("CLIENTE", ""),
+                "n_ordine": d.get("N. ORDINE", ""),
+                "articolo": d.get("ARTICOLO", ""),
+                "consegna": d.get("CONSEGNA", ""),
+                "quantita": d.get("QUANTITÀ", ""),
+                "prezzo": d.get("PREZZO", "")
+            })
+        supabase.table("ordini").insert(dati_db).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nel salvataggio sul Cloud: {e}")
+        return False
+
+def rinomina_articolo_cloud(vecchio_nome, nuovo_nome, cliente=None):
+    try:
+        query = supabase.table("ordini").update({"articolo": nuovo_nome}).eq("articolo", vecchio_nome)
+        if cliente:
+            query = query.eq("cliente", cliente)
+        query.execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nell'aggiornamento dell'articolo sul Cloud: {e}")
+        return False
+
+# ---------------------------------------------------------
+# GESTIONE PERMANENTE COPPIE IGNORATE SU CLOUD
+# ---------------------------------------------------------
+def carica_coppie_ignorate_cloud():
+    try:
+        res = supabase.table("coppie_ignorate").select("articolo_a, articolo_b").execute()
+        coppie = []
+        for r in res.data:
+            coppie.append(tuple(sorted([r["articolo_a"], r["articolo_b"]])))
+        return coppie
+    except Exception as e:
+        st.error(f"Errore nel caricamento delle coppie ignorate: {e}")
+        return []
+
+def aggiungi_coppia_ignorata_cloud(art_a, art_b):
+    try:
+        a, b = sorted([art_a, art_b])
+        supabase.table("coppie_ignorate").insert({"articolo_a": a, "articolo_b": b}).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nel salvataggio coppia ignorata: {e}")
+        return False
+
+def rimuovi_ultima_coppia_ignorata_cloud():
+    try:
+        res = supabase.table("coppie_ignorate").select("id").order("id", desc=True).limit(1).execute()
+        if res.data:
+            last_id = res.data[0]["id"]
+            supabase.table("coppie_ignorate").delete().eq("id", last_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nella rimozione dell'ultima coppia ignorata: {e}")
+        return False
+
+def svuota_coppie_ignorate_cloud():
+    try:
+        supabase.table("coppie_ignorate").delete().neq("id", 0).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nello svuotamento delle coppie ignorate: {e}")
+        return False
+
+# ---------------------------------------------------------
+# GESTIONE PERMANENTE MAPPATURA CALENDAR SU CLOUD
+# ---------------------------------------------------------
+def carica_mappatura_calendar_cloud():
+    try:
+        res = supabase.table("mappatura_calendar").select("parola_chiave, cliente").execute()
+        return {r["parola_chiave"]: r["cliente"] for r in res.data}
+    except Exception as e:
+        return {}
+
+def aggiungi_mappatura_calendar_cloud(parola_chiave, cliente):
+    try:
+        supabase.table("mappatura_calendar").upsert({
+            "parola_chiave": parola_chiave,
+            "cliente": cliente
+        }, on_conflict="parola_chiave").execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nel salvataggio della regola: {e}")
+        return False
+
+def rimuovi_mappatura_calendar_cloud(parola_chiave):
+    try:
+        supabase.table("mappatura_calendar").delete().eq("parola_chiave", parola_chiave).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nella rimozione della regola: {e}")
+        return False
+
+def svuota_mappatura_calendar_cloud():
+    try:
+        supabase.table("mappatura_calendar").delete().neq("id", 0).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nello svuotamento delle regole: {e}")
+        return False
+        
+# ---------------------------------------------------------
+# GESTIONE PERMANENTE CLIENTE IGNORATI VISITE SU CLOUD
+# ---------------------------------------------------------
+def carica_clienti_ignorati_visite_cloud():
+    try:
+        res = supabase.table("clienti_ignorati_visite").select("cliente").execute()
+        return [r["cliente"] for r in res.data]
+    except Exception as e:
+        return []
+
+def aggiungi_clienti_ignorati_visite_cloud(lista_clienti_nomi):
+    try:
+        dati_db = [{"cliente": nome} for nome in lista_clienti_nomi if nome]
+        if dati_db:
+            supabase.table("clienti_ignorati_visite").insert(dati_db).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nell'esclusione dei clienti: {e}")
+        return False
+
+def rimuovi_cliente_ignorato_visita_cloud(cliente_nome):
+    try:
+        supabase.table("clienti_ignorati_visite").delete().eq("cliente", cliente_nome).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nel ripristino del cliente: {e}")
+        return False
+
+def svuota_clienti_ignorati_visite_cloud():
+    try:
+        supabase.table("clienti_ignorati_visite").delete().neq("id", 0).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nel ripristino dei clienti: {e}")
+        return False
+
+# ---------------------------------------------------------
+# GESTIONE PERMANENTE PREVISIONALE IGNORATO SU CLOUD
+# ---------------------------------------------------------
+def carica_articoli_ignorati_prev_cloud():
+    try:
+        res = supabase.table("articoli_ignorati_previsionale").select("cliente, articolo").execute()
+        return [(r["cliente"], r["articolo"]) for r in res.data]
+    except Exception as e:
+        return []
+
+def aggiungi_articoli_ignorati_prev_cloud(lista_coppie):
+    try:
+        dati_db = [{"cliente": c, "articolo": a} for c, a in lista_coppie if c and a]
+        if dati_db:
+            supabase.table("articoli_ignorati_previsionale").insert(dati_db).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nell'esclusione dal previsionale: {e}")
+        return False
+
+def rimuovi_articolo_ignorato_prev_cloud(cliente, articolo):
+    try:
+        supabase.table("articoli_ignorati_previsionale").delete().eq("cliente", cliente).eq("articolo", articolo).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nel ripristino dal previsionale: {e}")
+        return False
+
+def svuota_articoli_ignorati_prev_cloud():
+    try:
+        supabase.table("articoli_ignorati_previsionale").delete().neq("id", 0).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nel ripristino totale del previsionale: {e}")
+        return False
+
+# ---------------------------------------------------------
+# CALCOLO ALGORITMO PREVISIONALE RIORDINI
+# ---------------------------------------------------------
+def calcola_previsionale(df_ordini):
+    if df_ordini.empty:
+        return pd.DataFrame()
+
+    df = df_ordini.copy()
+    df["DATA_DT"] = pd.to_datetime(df["CONSEGNA"], format="%d/%m/%Y", errors="coerce")
+    df = df.dropna(subset=["DATA_DT"]).sort_values(["CLIENTE", "ARTICOLO", "DATA_DT"])
+
+    oggi = datetime.now()
+    mese_corrente = oggi.month
+    anno_corrente = oggi.year
+    
+    prossimo_mese_dt = (oggi.replace(day=1) + timedelta(days=32)).replace(day=1)
+    mese_prossimo = prossimo_mese_dt.month
+    anno_prossimo = prossimo_mese_dt.year
+
+    previsioni = []
+
+    gruppi = df.groupby(["CLIENTE", "ARTICOLO"])
+
+    for (cliente, articolo), g in gruppi:
+        if len(g) == 0:
+            continue
+
+        date_consegne = g["DATA_DT"].tolist()
+        ultima_data = date_consegne[-1]
+        ultima_qta = g["QUANTITÀ"].iloc[-1]
+        ultimo_prezzo = g["PREZZO"].iloc[-1]
+
+        gg_trascorsi = (oggi - ultima_data).days
+
+        if len(date_consegne) > 1:
+            diffs = [(date_consegne[k] - date_consegne[k-1]).days for k in range(1, len(date_consegne))]
+            intervallo_medio = sum(diffs) / len(diffs)
+            intervallo_medio = max(intervallo_medio, 15)
+        else:
+            intervallo_medio = 60
+
+        data_stimata = ultima_data + timedelta(days=int(intervallo_medio))
+        ha_ordine_futuro = any(d >= oggi.replace(day=1) for d in date_consegne)
+
+        stesso_mese_corr = (data_stimata.month == mese_corrente and data_stimata.year == anno_corrente)
+        stesso_mese_prox = (data_stimata.month == mese_prossimo and data_stimata.year == anno_prossimo)
+        in_ritardo = (data_stimata < oggi and not ha_ordine_futuro)
+
+        if gg_trascorsi > 365:
+            stato = "⚪ Articolo Declassato"
+            periodo_rif = "Inattivo (> 1 anno)"
+            previsioni.append({
+                "CLIENTE": cliente,
+                "ARTICOLO": articolo,
+                "STATO": stato,
+                "PERIODO ATTESO": periodo_rif,
+                "GG TRASCORSI": gg_trascorsi,
+                "DATA STIMATA RIORDINO": data_stimata.strftime("%d/%m/%Y"),
+                "FREQ. MEDIA (GG)": int(intervallo_medio),
+                "ULTIMA CONSEGNA": ultima_data.strftime("%d/%m/%Y"),
+                "ULTIMA Q.TÀ": ultima_qta,
+                "ULTIMO PREZZO": ultimo_prezzo
+            })
+        elif stesso_mese_corr or stesso_mese_prox or in_ritardo:
+            if in_ritardo:
+                stato = "🔴 In Ritardo / Da Sollecitare"
+                periodo_rif = "Scaduto"
+            elif stesso_mese_corr:
+                stato = "🟢 Già Ordinato" if ha_ordine_futuro else "🟡 Mese Corrente"
+                periodo_rif = "Mese Corrente"
+            else:
+                stato = "🟢 Già Ordinato" if ha_ordine_futuro else "🔵 Mese Successivo"
+                periodo_rif = "Mese Successivo"
+
+            previsioni.append({
+                "CLIENTE": cliente,
+                "ARTICOLO": articolo,
+                "STATO": stato,
+                "PERIODO ATTESO": periodo_rif,
+                "GG TRASCORSI": gg_trascorsi,
+                "DATA STIMATA RIORDINO": data_stimata.strftime("%d/%m/%Y"),
+                "FREQ. MEDIA (GG)": int(intervallo_medio),
+                "ULTIMA CONSEGNA": ultima_data.strftime("%d/%m/%Y"),
+                "ULTIMA Q.TÀ": ultima_qta,
+                "ULTIMO PREZZO": ultimo_prezzo
+            })
+
+    df_prev = pd.DataFrame(previsioni)
+    if not df_prev.empty:
+        df_prev = df_prev.sort_values(by=["STATO", "DATA STIMATA RIORDINO"])
+    return df_prev
+
+# ---------------------------------------------------------
+# ESTRAZIONE EVENTI GOOGLE CALENDAR (VERSIONE DEBUG & AUTO-DISCOVERY)
+# ---------------------------------------------------------
+def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
+    service = get_calendar_service()
+    if not service:
+        st.error("Servizio Google Calendar non inizializzato. Controlla i Secrets 'gcp_service_account'.")
+        return pd.DataFrame()
+
+    try:
+        # Recupera automaticamente tutti i calendari accessibili al Service Account
+        CALENDAR_IDS = []
+        try:
+            cal_list_res = service.calendarList().list().execute().get('items', [])
+            for c in cal_list_res:
+                CALENDAR_IDS.append(c['id'])
+        except Exception as e:
+            st.warning(f"Impossibile elencare i calendari in automatico: {e}")
+
+        # Fallback agli ID manuali se l'elenco automatico è vuoto
+        if not CALENDAR_IDS:
+            CALENDAR_IDS = ['primary', 'pseneci.lavoro@gmail.com']
+
+        st.caption(f"Calendari identificati per la scansione: {CALENDAR_IDS}")
+
+        oggi = datetime.now()
+        time_min = (oggi - timedelta(days=365)).isoformat() + 'Z'
+        time_max = (oggi + timedelta(days=90)).isoformat() + 'Z'
+        
+        visite_passate = {}
+        visite_future = {}
+        eventi_letti_debug = []
+
+        def pulisci_testo(t):
+            if not t:
+                return ""
+            t = re.sub(r"\b(SPA|SRL|S\.P\.A\.|S\.R\.L\.|SS|S\.S\.|INC|LTD)\b", "", t, flags=re.IGNORECASE)
+            t = re.sub(r"[^\w\s]", " ", t)
+            return re.sub(r"\s+", " ", t).strip().lower()
+
+        clienti_db_clean = {c: pulisci_testo(c) for c in lista_clienti_db if str(c).strip()}
+
+        for cal_id in CALENDAR_IDS:
+            try:
+                events_result = service.events().list(
+                    calendarId=cal_id, 
+                    timeMin=time_min,
+                    timeMax=time_max,
+                    maxResults=2500, 
+                    singleEvents=True,
+                    orderBy='startTime'
+                ).execute()
+                events = events_result.get('items', [])
+            except Exception as err_cal:
+                st.error(f"Errore nella lettura del calendario '{cal_id}': {err_cal}")
+                continue
+
+            for event in events:
+                summary = event.get('summary', '')
+                if not summary:
+                    continue
+
+                start = event['start'].get('dateTime', event['start'].get('date'))
+                try:
+                    str_date = start.split('T')[0]
+                    data_evento = datetime.strptime(str_date, "%Y-%m-%d")
+                except Exception:
+                    continue
+
+                eventi_letti_debug.append(f"[{cal_id[:15]}...] {data_evento.strftime('%d/%m/%Y')} - {summary}")
+
+                cliente_abbinato = None
+
+                # 1. Regole manuali
+                for parola_chiave, cliente_reale in mappa_custom.items():
+                    if parola_chiave.lower() in summary.lower():
+                        cliente_abbinato = cliente_reale
+                        break
+
+                # 2. Match automatico
+                if not cliente_abbinato:
+                    summary_clean = pulisci_testo(summary)
+                    for cliente_orig, cliente_clean in clienti_db_clean.items():
+                        if len(cliente_clean) >= 2:
+                            parole_summary = set(summary_clean.split())
+                            parole_cliente = set(cliente_clean.split())
+                            
+                            if parole_summary and (parole_summary.issubset(parole_cliente) or parole_cliente.issubset(parole_summary)):
+                                cliente_abbinato = cliente_orig
+                                break
+                            elif fuzz.partial_ratio(summary_clean, cliente_clean) >= 85:
+                                cliente_abbinato = cliente_orig
+                                break
+
+                if cliente_abbinato:
+                    if data_evento >= oggi.replace(hour=0, minute=0, second=0, microsecond=0):
+                        if cliente_abbinato not in visite_future or data_evento < visite_future[cliente_abbinato]:
+                            visite_future[cliente_abbinato] = data_evento
+                    else:
+                        if cliente_abbinato not in visite_passate or data_evento > visite_passate[cliente_abbinato]:
+                            visite_passate[cliente_abbinato] = data_evento
+
+        with st.expander("🔍 Log Debug: Eventi letti"):
+            st.write(f"Totale eventi analizzati: {len(eventi_letti_debug)}")
+            if eventi_letti_debug:
+                st.caption("Ultimi eventi letti:")
+                st.code("\n".join(eventi_letti_debug[-30:]))
+            else:
+                st.info("Nessun evento estratto dai calendari specificati.")
+
+        risultati = []
+        for cliente in lista_clienti_db:
+            ha_futura = cliente in visite_future
+            ha_passata = cliente in visite_passate
+
+            if ha_futura:
+                u_visita = visite_future[cliente]
+                gg_futuri = (u_visita - oggi).days + 1
+                str_visita = u_visita.strftime("%d/%m/%Y")
+                str_gg = f"-{gg_futuri}"
+                stato_visita = "🔵 Programmata"
+            elif ha_passata:
+                u_visita = visite_passate[cliente]
+                gg_trascorsi = (oggi - u_visita).days
+                str_visita = u_visita.strftime("%d/%m/%Y")
+                str_gg = str(gg_trascorsi)
+                
+                if gg_trascorsi < 60:
+                    stato_visita = "🟢 Recente (< 60 gg)"
+                elif gg_trascorsi <= 90:
+                    stato_visita = "🟡 Programmare (60-90 gg)"
+                else:
+                    stato_visita = "🔴 Urgente (> 90 gg)"
+            else:
+                str_visita = "Mai trovata"
+                str_gg = "N/D"
+                stato_visita = "⚪ Nessuna Visita a Calendario"
+
+            risultati.append({
+                "CLIENTE": cliente,
+                "DATA ULTIMA VISITA": str_visita,
+                "GG DALL'ULTIMA VISITA": str_gg,
+                "STATO VISITA": stato_visita
+            })
+
+        df_res = pd.DataFrame(risultati)
+        if not df_res.empty:
+            df_res = df_res.sort_values(by=["STATO VISITA", "CLIENTE"])
+        return df_res
+
+    except Exception as e:
+        st.error(f"Errore nella lettura del Google Calendar: {e}")
+        return pd.DataFrame()
+# ---------------------------------------------------------
+# INTERFACCIA STREAMLIT A TABS (6 SCHEDE)
+# ---------------------------------------------------------
+col_h1, col_h2 = st.columns([5, 1])
+with col_h1:
+    st.title("📦 Gestionale Ordini PDF (Cloud Supabase)")
+with col_h2:
+    st.write("")
+    if st.button("🔒 Disconnetti"):
+        st.session_state.autenticato = False
+        st.rerun()
+
+if "db_ordini" not in st.session_state:
+    st.session_state.db_ordini = carica_db_cloud()
+
+if "uploader_key" not in st.session_state:
+    st.session_state.uploader_key = 0
+
+if "dati_pdf_in_attesa" not in st.session_state:
+    st.session_state.dati_pdf_in_attesa = []
+
+if "select_all_state" not in st.session_state:
+    st.session_state.select_all_state = False
+
+if "select_all_visite_state" not in st.session_state:
+    st.session_state.select_all_visite_state = False
+
+if "select_all_prev_state" not in st.session_state:
+    st.session_state.select_all_prev_state = False
+
+if "coppie_ignorate_list" not in st.session_state:
+    st.session_state.coppie_ignorate_list = carica_coppie_ignorate_cloud()
+
+if "clienti_ignorati_visite_list" not in st.session_state:
+    st.session_state.clienti_ignorati_visite_list = carica_clienti_ignorati_visite_cloud()
+
+if "articoli_ignorati_prev_list" not in st.session_state:
+    st.session_state.articoli_ignorati_prev_list = carica_articoli_ignorati_prev_cloud()
+
+if "mappa_custom_calendar" not in st.session_state:
+    st.session_state.mappa_custom_calendar = carica_mappatura_calendar_cloud()
+
+tab_database, tab_grafici, tab_norm_cli, tab_fuzzy, tab_previsionale, tab_visite = st.tabs([
+    "📋 Database Ordini", 
+    "📈 Analisi & Grafici", 
+    "🏷️ Normalizzazione Cliente",
+    "🤖 Pulizia Smart (Fuzzy)",
+    "🔮 Previsionale Riordini",
+    "📅 Monitoraggio Visite"
+])
+
+# =========================================================
+# SCHEDA 1: DATABASE ORDINI & UPLOAD
+# =========================================================
+with tab_database:
+    st.subheader("1. Carica le Conferme d'Ordine")
+    
+    uploaded_files = st.file_uploader(
+        "Trascina qui i file PDF degli ordini", 
+        type=["pdf"], 
+        accept_multiple_files=True,
+        key=f"uploader_{st.session_state.uploader_key}"
+    )
+
+    col_proc, col_clear, _ = st.columns([1.5, 2, 4])
+
+    with col_proc:
+        btn_processa = st.button("⚙️ Processa PDF", type="primary")
+
+    with col_clear:
+        if st.button("🧹 Svuota PDF Caricati"):
+            st.session_state.uploader_key += 1
+            st.session_state.dati_pdf_in_attesa = []
+            st.rerun()
+
+    if btn_processa:
+        if uploaded_files:
+            nuovi_dati = []
+
+            for pdf_file in uploaded_files:
+                dati = estrai_dati_pdf(pdf_file)
+
+                for riga in dati:
+                    riga["FILE SORGENTE"] = pdf_file.name
+
+                nuovi_dati.extend(dati)
+
+            if nuovi_dati:
+                st.session_state.dati_pdf_in_attesa = classifica_righe_importazione(
+                    nuovi_dati,
+                    st.session_state.db_ordini
+                )
+            else:
+                st.session_state.dati_pdf_in_attesa = []
+                st.error("Impossibile estrarre dati validi dal PDF.")
+        else:
+            st.warning("Carica prima almeno un file PDF!")
+
+    # ---------------------------------------------------------
+    # ANTEPRIMA DATI ESTRATTI PRIMA DEL SALVATAGGIO
+    # ---------------------------------------------------------
+    if st.session_state.dati_pdf_in_attesa:
+        st.subheader("🔍 Anteprima dati estratti")
+
+        df_anteprima = pd.DataFrame(st.session_state.dati_pdf_in_attesa)
+
+        colonne_prioritarie = [
+            c for c in ["FILE SORGENTE", "STATO", "AVVISI"]
+            if c in df_anteprima.columns
+        ]
+        altre_colonne = [
+            c for c in df_anteprima.columns
+            if c not in colonne_prioritarie
+        ]
+        df_anteprima = df_anteprima[colonne_prioritarie + altre_colonne]
+
+        st.dataframe(
+            df_anteprima,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        conteggio_nuove = int((df_anteprima["STATO"] == "🟢 NUOVO").sum()) if "STATO" in df_anteprima.columns else len(df_anteprima)
+        conteggio_presenti = int((df_anteprima["STATO"] == "🔴 GIÀ PRESENTE").sum()) if "STATO" in df_anteprima.columns else 0
+        conteggio_verifica = int((df_anteprima["STATO"] == "🟡 DA VERIFICARE").sum()) if "STATO" in df_anteprima.columns else 0
+        conteggio_avvisi = int((df_anteprima["AVVISI"] != "✅ OK").sum()) if "AVVISI" in df_anteprima.columns else 0
+
+        st.info(
+            f"Righe estratte: {len(df_anteprima)} | "
+            f"🟢 Nuove: {conteggio_nuove} | "
+            f"🔴 Già presenti: {conteggio_presenti} | "
+            f"🟡 Da verificare: {conteggio_verifica} | "
+            f"⚠️ Con avvisi: {conteggio_avvisi}"
+        )
+
+        if conteggio_avvisi > 0:
+            st.warning(
+                "Alcune righe hanno campi mancanti o formati sospetti. "
+                "Gli avvisi sono solo informativi: nessuna riga viene bloccata automaticamente."
+            )
+
+        if conteggio_presenti > 0:
+            st.warning(
+                "Le righe 🔴 GIÀ PRESENTE non verranno reinserite nel database."
+            )
+
+        if conteggio_verifica > 0:
+            st.warning(
+                "Le righe 🟡 DA VERIFICARE hanno lo stesso cliente e numero ordine "
+                "di righe già presenti, ma dati differenti. Verranno salvate se confermi: "
+                "controllale prima di procedere."
+            )
+
+        righe_da_salvare = [
+            riga for riga in st.session_state.dati_pdf_in_attesa
+            if riga.get("STATO") != "🔴 GIÀ PRESENTE"
+        ]
+
+        if righe_da_salvare:
+            if st.button("✅ Conferma e salva nel database", type="primary"):
+                if inserisci_ordini_cloud(righe_da_salvare):
+                    st.session_state.db_ordini = carica_db_cloud()
+                    st.session_state.dati_pdf_in_attesa = []
+                    st.success(
+                        f"Salvate {len(righe_da_salvare)} righe nel Cloud. "
+                        f"Escluse {conteggio_presenti} righe già presenti."
+                    )
+                    st.rerun()
+        else:
+            st.success(
+                "Tutte le righe estratte risultano già presenti nel database. "
+                "Non c'è nulla da salvare."
+            )
+
+    st.divider()
+
+    st.subheader("2. Tabella Ordini in Database Cloud")
+    
+    if st.button("🔄 Ricarica Dati dal Cloud"):
+        st.session_state.db_ordini = carica_db_cloud()
+        st.rerun()
+
+    df_attuale = st.session_state.db_ordini
+
+    if not df_attuale.empty:
+        st.sidebar.header("🔍 Filtri Tabella")
+        
+        anni_disponibili = set()
+        for data in df_attuale["CONSEGNA"].dropna():
+            match_anno = re.search(r"\d{2}/\d{2}/(\d{4})", str(data))
+            if match_anno:
+                anni_disponibili.add(match_anno.group(1))
+                
+        lista_anni = ["Tutti"] + sorted(list(anni_disponibili), reverse=True)
+        anno_selezionato = st.sidebar.selectbox("Filtra per ANNO CONSEGNA:", lista_anni, key="filter_anno")
+
+        lista_clienti = ["Tutti"] + sorted([str(x) for x in df_attuale["CLIENTE"].unique() if str(x).strip()])
+        cliente_selezionato = st.sidebar.selectbox("Filtra per CLIENTE:", lista_clienti, key="filter_cliente")
+        
+        lista_articoli = ["Tutti"] + sorted([str(x) for x in df_attuale["ARTICOLO"].unique() if str(x).strip()])
+        articolo_selezionato = st.sidebar.selectbox("Filtra per ARTICOLO:", lista_articoli, key="filter_art")
+        
+        st.sidebar.divider()
+        st.sidebar.header("🔀 Ordinamento Tabella")
+        colonna_ordinamento = st.sidebar.selectbox(
+            "Ordina per:",
+            ["Nessuno", "CONSEGNA", "CLIENTE", "ARTICOLO", "N. ORDINE", "QUANTITÀ", "PREZZO"],
+            key="sort_col"
+        )
+        ordine_direzione = st.sidebar.radio(
+            "Ordine:",
+            ["Crescente (A-Z / 0-9)", "Decrescente (Z-A / 9-0)"],
+            key="sort_dir"
+        )
+
+        df_filtrato = df_attuale.copy()
+
+        if anno_selezionato != "Tutti":
+            df_filtrato = df_filtrato[df_filtrato["CONSEGNA"].astype(str).str.endswith(f"/{anno_selezionato}")]
+
+        if cliente_selezionato != "Tutti":
+            df_filtrato = df_filtrato[df_filtrato["CLIENTE"] == cliente_selezionato]
+
+        if articolo_selezionato != "Tutti":
+            df_filtrato = df_filtrato[df_filtrato["ARTICOLO"] == articolo_selezionato]
+
+        if colonna_ordinamento != "Nessuno":
+            ascending = (ordine_direzione == "Crescente (A-Z / 0-9)")
+            if colonna_ordinamento == "CONSEGNA":
+                df_filtrato["_sort_dt"] = pd.to_datetime(df_filtrato["CONSEGNA"], format="%d/%m/%Y", errors="coerce")
+                df_filtrato = df_filtrato.sort_values("_sort_dt", ascending=ascending).drop(columns=["_sort_dt"])
+            elif colonna_ordinamento in ["QUANTITÀ", "PREZZO"]:
+                df_filtrato["_sort_num"] = df_filtrato[colonna_ordinamento].astype(str).str.replace(".", "", regex=False).str.replace("€", "", regex=False).str.replace(",", ".", regex=False)
+                df_filtrato["_sort_num"] = pd.to_numeric(df_filtrato["_sort_num"], errors="coerce")
+                df_filtrato = df_filtrato.sort_values("_sort_num", ascending=ascending).drop(columns=["_sort_num"])
+            else:
+                df_filtrato = df_filtrato.sort_values(colonna_ordinamento, ascending=ascending)
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Righe Visibili", len(df_filtrato))
+        c2.metric("Clienti Distinti", df_filtrato["CLIENTE"].nunique())
+        c3.metric("Articoli Distinti", df_filtrato["ARTICOLO"].nunique())
+
+        # Manteniamo l'ID Supabase associato direttamente a ogni riga.
+        # L'ID resta nascosto nell'interfaccia ma viene usato per
+        # eliminazioni e aggiornamenti sicuri, indipendentemente da filtri
+        # e ordinamenti.
+        df_display = df_filtrato.copy()
+        df_display.insert(0, "Seleziona", st.session_state.select_all_state)
+
+        colonne_bloccate = [
+            col for col in df_display.columns
+            if col != "Seleziona"
+        ]
+
+        edited_df = st.data_editor(
+            df_display,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "id": None,
+                "Seleziona": st.column_config.CheckboxColumn(
+                    "Seleziona",
+                    help="Spunta le righe su cui vuoi eseguire un'operazione."
+                ),
+            },
+            disabled=colonne_bloccate,
+            key="editor_ordini"
+        )
+
+        col_sel_all, col_unsel_all, col_del, col_exp = st.columns([1.5, 1.5, 1.8, 1.8])
+        
+        with col_sel_all:
+            if st.button("☑️ Seleziona Tutte"):
+                st.session_state.select_all_state = True
+                st.rerun()
+
+        with col_unsel_all:
+            if st.button("⬜ Deseleziona Tutte"):
+                st.session_state.select_all_state = False
+                st.rerun()
+
+        with col_del:
+            with st.popover("🗑️ Elimina Selezionate"):
+                righe_da_eliminare = edited_df[edited_df["Seleziona"] == True]
+                count_del = len(righe_da_eliminare)
+                if count_del > 0:
+                    st.write("⚠️ **Conferma eliminazione**")
+                    st.caption(f"Sei sicuro di voler eliminare **{count_del}** righe dal database Cloud?")
+                    if st.button("Sì, elimina definitivamente", type="primary", key="btn_confirm_delete_rows"):
+                        ids_da_eliminare = [
+                            item_id
+                            for item_id in righe_da_eliminare["id"].tolist()
+                            if str(item_id).strip()
+                        ]
+                        if ids_da_eliminare:
+                            supabase.table("ordini").delete().in_("id", ids_da_eliminare).execute()
+                        st.session_state.db_ordini = carica_db_cloud()
+                        st.session_state.select_all_state = False
+                        st.success(f"Eliminate {len(ids_da_eliminare)} righe dal Cloud!")
+                        st.rerun()
+                else:
+                    st.info("Spunta prima la casella 'Seleziona' sulle righe da eliminare.")
+
+        with col_exp:
+            csv = df_filtrato.drop(columns=["id"], errors="ignore").to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Scarica CSV",
+                data=csv,
+                file_name='database_ordini_cloud.csv',
+                mime='text/csv',
+            )
+
+        st.divider()
+        st.subheader("✏️ Modifica / Unifica Ragione Sociale")
+        st.caption("Seleziona una o più righe dalla tabella in alto spuntando la casella 'Seleziona', poi imposta la nuova ragione sociale qui sotto.")
+
+        col_rename_1, col_rename_2, col_btn = st.columns([2, 2, 1.5])
+
+        with col_rename_1:
+            clienti_esistenti = sorted([str(x) for x in st.session_state.db_ordini["CLIENTE"].unique() if str(x).strip()])
+            cliente_scelto = st.selectbox("Scegli tra i clienti in database:", ["-- Seleziona o scrivi a destra --"] + clienti_esistenti, key="sel_cli_rename")
+
+        with col_rename_2:
+            nuovo_nome_input = st.text_input("Oppure digita una nuova ragione sociale:", placeholder="Es. CASEIFICIO F.LLI MARTIGNONI MARIO E", key="txt_cli_rename")
+
+        with col_btn:
+            st.write("")
+            st.write("")
+            btn_unifica = st.button("🔄 Aggiorna Cliente", type="primary", key="btn_cli_rename")
+
+        if btn_unifica:
+            righe_selezionate = edited_df[edited_df["Seleziona"] == True]
+            nome_finale = nuovo_nome_input.strip()
+            if not nome_finale and cliente_scelto != "-- Seleziona o scrivi a destra --":
+                nome_finale = cliente_scelto
+
+            if righe_selezionate.empty:
+                st.warning("Seleziona almeno una riga spuntando la casella 'Seleziona' nella tabella sopra!")
+            elif not nome_finale:
+                st.warning("Inserisci o seleziona una ragione sociale valida.")
+            else:
+                ids_da_aggiornare = [
+                    item_id
+                    for item_id in righe_selezionate["id"].tolist()
+                    if str(item_id).strip()
+                ]
+                if ids_da_aggiornare:
+                    supabase.table("ordini").update(
+                        {"cliente": nome_finale}
+                    ).in_("id", ids_da_aggiornare).execute()
+                st.session_state.db_ordini = carica_db_cloud()
+                st.session_state.select_all_state = False
+                st.success(f"Aggiornate {len(ids_da_aggiornare)} righe con la ragione sociale: '{nome_finale}'!")
+                st.rerun()
+
+        st.subheader("🏷️ Modifica / Unifica Nome Articolo")
+        st.caption("Seleziona una o più righe dalla tabella in alto spuntando la casella 'Seleziona', poi imposta il nuovo nome articolo qui sotto.")
+
+        col_art_1, col_art_2, col_art_btn = st.columns([2, 2, 1.5])
+
+        with col_art_1:
+            articoli_esistenti = sorted([str(x) for x in st.session_state.db_ordini["ARTICOLO"].unique() if str(x).strip()])
+            articolo_scelto = st.selectbox("Scegli tra gli articoli in database:", ["-- Seleziona o scrivi a destra --"] + articoli_esistenti, key="sel_art_rename")
+
+        with col_art_2:
+            nuovo_articolo_input = st.text_input("Oppure digita un nuovo nome articolo:", placeholder="Es. RIF.RICOTTA KBMK363 C", key="txt_art_rename")
+
+        with col_art_btn:
+            st.write("")
+            st.write("")
+            btn_unifica_art = st.button("🔄 Aggiorna Articolo", type="primary", key="btn_art_rename")
+
+        if btn_unifica_art:
+            righe_selezionate = edited_df[edited_df["Seleziona"] == True]
+            art_finale = nuovo_articolo_input.strip()
+            if not art_finale and articolo_scelto != "-- Seleziona o scrivi a destra --":
+                art_finale = articolo_scelto
+
+            if righe_selezionate.empty:
+                st.warning("Seleziona almeno una riga spuntando la casella 'Seleziona' nella tabella sopra!")
+            elif not art_finale:
+                st.warning("Inserisci o seleziona un nome articolo valido.")
+            else:
+                ids_da_aggiornare = [
+                    item_id
+                    for item_id in righe_selezionate["id"].tolist()
+                    if str(item_id).strip()
+                ]
+                if ids_da_aggiornare:
+                    supabase.table("ordini").update(
+                        {"articolo": art_finale}
+                    ).in_("id", ids_da_aggiornare).execute()
+                st.session_state.db_ordini = carica_db_cloud()
+                st.session_state.select_all_state = False
+                st.success(f"Aggiornate {len(ids_da_aggiornare)} righe con l'articolo: '{art_finale}'!")
+                st.rerun()
+
+    else:
+        st.info("Nessun ordine presente nel database Cloud. Carica dei PDF per iniziare.")
+
+# =========================================================
+# SCHEDA 2: ANALISI PREZZO NEL TEMPO
+# =========================================================
+with tab_grafici:
+    st.subheader("📊 Andamento Prezzo per Articolo (Mese/Anno)")
+    
+    df_chart = st.session_state.db_ordini.copy()
+    
+    if not df_chart.empty:
+        col_f1, col_f2 = st.columns(2)
+        
+        clienti_g = sorted([str(x) for x in df_chart["CLIENTE"].unique() if str(x).strip()])
+        sel_cliente_g = col_f1.selectbox("Seleziona CLIENTE:", ["Tutti"] + clienti_g, key="g_cliente")
+        
+        if sel_cliente_g != "Tutti":
+            df_chart = df_chart[df_chart["CLIENTE"] == sel_cliente_g]
+            
+        articoli_g = sorted([str(x) for x in df_chart["ARTICOLO"].unique() if str(x).strip()])
+        sel_art_g = col_f2.selectbox("Seleziona ARTICOLO:", articoli_g, key="g_articolo") if articoli_g else None
+
+        if sel_art_g:
+            df_art = df_chart[df_chart["ARTICOLO"] == sel_art_g].copy()
+            
+            df_art["DATA_DT"] = pd.to_datetime(df_art["CONSEGNA"], format="%d/%m/%Y", errors="coerce")
+            df_art = df_art.dropna(subset=["DATA_DT"]).sort_values("DATA_DT")
+            df_art["ANNO_MESE"] = df_art["DATA_DT"].dt.strftime("%Y-%m")
+
+            def converti_prezzo(val):
+                val_str = str(val).replace("€", "").strip().replace(",", ".")
+                try:
+                    return float(val_str)
+                except ValueError:
+                    return None
+
+            df_art["PREZZO_NUM"] = df_art["PREZZO"].apply(converti_prezzo)
+            df_art = df_art.dropna(subset=["PREZZO_NUM"])
+
+            if not df_art.empty:
+                df_grouped = df_art.groupby("ANNO_MESE")["PREZZO_NUM"].mean().reset_index()
+                df_grouped.set_index("ANNO_MESE", inplace=True)
+                df_grouped.rename(columns={"PREZZO_NUM": f"Prezzo Medio Unitario € ({sel_art_g})"}, inplace=True)
+
+                st.line_chart(df_grouped)
+
+                st.write("📋 Dettaglio ordini e prezzi trovati:")
+                st.dataframe(
+                    df_art[["CLIENTE", "N. ORDINE", "CONSEGNA", "QUANTITÀ", "PREZZO"]], 
+                    use_container_width=True
+                )
+            else:
+                st.warning("Nessun prezzo valido trovato per l'articolo selezionato.")
+    else:
+        st.info("Carica dei file PDF nella prima scheda per generare i grafici.")
+
+# =========================================================
+# SCHEDA 3: NORMALIZZAZIONE VELOCE PER CLIENTE
+# =========================================================
+with tab_norm_cli:
+    st.subheader("🏷️ Normalizzazione Veloce Articoli per Cliente")
+    st.markdown("Seleziona un cliente per visualizzare l'elenco dei suoi articoli in database, vedere quante volte compaiono e unificare le varianti obsolete in un solo clic.")
+
+    df_nc = st.session_state.db_ordini
+    if not df_nc.empty:
+        list_clienti_nc = sorted([x for x in df_nc["CLIENTE"].unique() if str(x).strip()])
+        sel_cli_nc = st.selectbox("👤 Seleziona Cliente:", ["-- Seleziona un cliente --"] + list_clienti_nc, key="nc_cli")
+
+        if sel_cli_nc != "-- Seleziona un cliente --":
+            df_cli_nc = df_nc[df_nc["CLIENTE"] == sel_cli_nc]
+            
+            art_counts = df_cli_nc["ARTICOLO"].value_counts().reset_index()
+            art_counts.columns = ["ARTICOLO", "N° ORDINI"]
+
+            col_list, col_action = st.columns([3, 2])
+
+            with col_list:
+                st.markdown(f"### Articoli trovati per **{sel_cli_nc}** ({len(art_counts)} distinti)")
+                st.dataframe(art_counts, use_container_width=True)
+
+            with col_action:
+                st.markdown("### 🔄 Unifica due articoli")
+                st.caption("Seleziona l'articolo da sostituire e quello definitivo da mantenere.")
+
+                articoli_cli_list = sorted(art_counts["ARTICOLO"].tolist())
+                
+                art_da_cambiare = st.selectbox("❌ Articolo da SOSTITUIRE (obsoleto/errato):", ["-- Seleziona --"] + articoli_cli_list, key="nc_from")
+                
+                articoli_dest_list = [a for a in articoli_cli_list if a != art_da_cambiare]
+                art_destinazione = st.selectbox("✅ Nuovo nome CORRETTO (da applicare):", ["-- Seleziona o scrivi sotto --"] + articoli_dest_list, key="nc_to_sel")
+                
+                art_dest_custom = st.text_input("Oppure digita un nuovo nome valido:", placeholder="Digita qui...", key="nc_to_txt")
+
+                nome_definitivo = art_dest_custom.strip() if art_dest_custom.strip() else (art_destinazione if art_destinazione != "-- Seleziona o scrivi sotto --" else "")
+
+                if st.button("🚀 Unifica per questo Cliente", type="primary", key="btn_nc_apply"):
+                    if art_da_cambiare == "-- Seleziona --":
+                        st.warning("Seleziona prima l'articolo da sostituire.")
+                    elif not nome_definitivo:
+                        st.warning("Seleziona o digita il nome dell'articolo corretto.")
+                    else:
+                        if rinomina_articolo_cloud(art_da_cambiare, nome_definitivo, cliente=sel_cli_nc):
+                            st.success(f"Tutti gli ordini di '{art_da_cambiare}' per {sel_cli_nc} sono stati rinominati in '{nome_definitivo}'!")
+                            st.session_state.db_ordini = carica_db_cloud()
+                            st.rerun()
+    else:
+        st.warning("Database vuoto o in fase di caricamento.")
+
+# =========================================================
+# SCHEDA 4: PULIZIA SMART (FUZZY MATCHING CON PERSISTENZA CLOUD)
+# =========================================================
+with tab_fuzzy:
+    st.subheader("🤖 Rilevamento Automatico Duplicati e Varianti")
+    st.markdown("Questa funzione confronta gli articoli in database e trova le varianti quasi identiche per unificarle con un clic.")
+
+    df_fz = st.session_state.db_ordini
+    if not df_fz.empty:
+        col_f1, col_f2, col_f3 = st.columns([2, 2, 1])
+        
+        list_cli = ["Tutti i Clienti"] + sorted([x for x in df_fz["CLIENTE"].unique() if str(x).strip()])
+        target_cli = col_f1.selectbox("Seleziona Cliente da analizzare:", list_cli, key="fz_cli")
+        soglia = col_f2.slider("Soglia di somiglianza (%):", min_value=70, max_value=98, value=85, step=1)
+        
+        if col_f3.button("🔄 Ricarica DB Cloud", key="btn_fz_reload"):
+            st.session_state.db_ordini = carica_db_cloud()
+            st.session_state.coppie_ignorate_list = carica_coppie_ignorate_cloud()
+            st.rerun()
+
+        if target_cli != "Tutti i Clienti":
+            df_work = df_fz[df_fz["CLIENTE"] == target_cli]
+        else:
+            df_work = df_fz
+
+        articoli_unici = sorted([a for a in df_work["ARTICOLO"].unique() if str(a).strip()])
+        st.info(f"Articoli distinti da analizzare: **{len(articoli_unici)}**")
+
+        coppie_trovate = []
+        processati = set()
+        set_ignorate = set(st.session_state.coppie_ignorate_list)
+
+        for idx, art_a in enumerate(articoli_unici):
+            if art_a in processati:
+                continue
+            match = process.extract(
+                art_a, 
+                articoli_unici[idx+1:], 
+                scorer=fuzz.token_sort_ratio, 
+                score_cutoff=soglia
+            )
+            for art_b, score, _ in match:
+                coppia_key = tuple(sorted([art_a, art_b]))
+                
+                if coppia_key not in set_ignorate:
+                    coppie_trovate.append({
+                        "key": coppia_key,
+                        "Articolo A": art_a,
+                        "Articolo B": art_b,
+                        "Somiglianza": f"{round(score)}%",
+                        "Conteggio A": len(df_work[df_work["ARTICOLO"] == art_a]),
+                        "Conteggio B": len(df_work[df_work["ARTICOLO"] == art_b])
+                    })
+                processati.add(art_b)
+
+        col_bar1, col_bar2, col_bar3 = st.columns([1.8, 1.8, 2.2])
+
+        if st.session_state.coppie_ignorate_list:
+            with col_bar1:
+                with st.popover(f"👁️ Ripristina {len(st.session_state.coppie_ignorate_list)} ignorate"):
+                    st.write("⚠️ **Conferma ripristino**")
+                    st.caption("Vuoi far ricomparire tutte le coppie precedentemente ignorate?")
+                    if st.button("Sì, ripristina tutte", type="primary", key="btn_confirm_all_restore"):
+                        if svuota_coppie_ignorate_cloud():
+                            st.session_state.coppie_ignorate_list = []
+                            st.rerun()
+
+            with col_bar2:
+                if st.button("↩️ Ripristina ultima ignorata", key="btn_undo_last"):
+                    if rimuovi_ultima_coppia_ignorata_cloud():
+                        st.session_state.coppie_ignorate_list = carica_coppie_ignorate_cloud()
+                        st.rerun()
+
+        if coppie_trovate:
+            with col_bar3:
+                with st.popover(f"❌ Ignora tutte le {len(coppie_trovate)} coppie visibili"):
+                    st.write("⚠️ **Conferma operazione**")
+                    st.caption(f"Vuoi nascondere tutte le {len(coppie_trovate)} coppie attualmente in elenco?")
+                    if st.button("Sì, ignora tutte", type="primary", key="btn_confirm_all_ignore"):
+                        for c in coppie_trovate:
+                            if c['key'] not in set_ignorate:
+                                aggiungi_coppia_ignorata_cloud(c['key'][0], c['key'][1])
+                        st.session_state.coppie_ignorate_list = carica_coppie_ignorate_cloud()
+                        st.rerun()
+
+        st.divider()
+
+        if coppie_trovate:
+            st.write(f"🔍 Trovate **{len(coppie_trovate)}** potenziali corrispondenze:")
+            st.divider()
+
+            for i, c in enumerate(coppie_trovate):
+                with st.container():
+                    col_head_left, col_head_right = st.columns([4, 1])
+                    col_head_left.markdown(f"#### Coppia #{i+1} — Somiglianza: `{c['Somiglianza']}`")
+                    
+                    if col_head_right.button("❌ Ignora coppia", key=f"btn_ignore_{i}"):
+                        if aggiungi_coppia_ignorata_cloud(c['key'][0], c['key'][1]):
+                            st.session_state.coppie_ignorate_list = carica_coppie_ignorate_cloud()
+                            st.rerun()
+
+                    col_left, col_right = st.columns(2)
+
+                    with col_left:
+                        st.markdown(f"**Opzione A** ({c['Conteggio A']} ordini):")
+                        st.code(c['Articolo A'])
+                        if st.button(f"👈 Unifica tutto sotto Opzione A", key=f"btn_a_{i}"):
+                            if rinomina_articolo_cloud(c['Articolo B'], c['Articolo A']):
+                                st.success(f"Unificato! '{c['Articolo B']}' convertito in '{c['Articolo A']}'")
+                                st.session_state.db_ordini = carica_db_cloud()
+                                st.rerun()
+
+                    with col_right:
+                        st.markdown(f"**Opzione B** ({c['Conteggio B']} ordini):")
+                        st.code(c['Articolo B'])
+                        if st.button(f"👉 Unifica tutto sotto Opzione B", key=f"btn_b_{i}"):
+                            if rinomina_articolo_cloud(c['Articolo A'], c['Articolo B']):
+                                st.success(f"Unificato! '{c['Articolo A']}' convertito in '{c['Articolo B']}'")
+                                st.session_state.db_ordini = carica_db_cloud()
+                                st.rerun()
+                    st.divider()
+        else:
+            st.success("Nessun duplicato trovato con la percentuale di somiglianza impostata.")
+    else:
+        st.warning("Database vuoto.")
+
+# =========================================================
+# SCHEDA 5: PREVISIONALE RIORDINI
+# =========================================================
+with tab_previsionale:
+    st.subheader("🔮 Previsionale Riordini (Mese Corrente & Successivo)")
+    st.markdown("L'algoritmo analizza la frequenza storica di riordine per ogni coppia **Cliente-Articolo**, i giorni trascorsi dall'ultimo ordine e ti segnala le commesse attese o in ritardo.")
+
+    df_prev_base = st.session_state.db_ordini
+
+    if not df_prev_base.empty:
+        df_prev_res = calcola_previsionale(df_prev_base)
+
+        if not df_prev_res.empty:
+            set_prev_ignorati = set(st.session_state.articoli_ignorati_prev_list)
+            if set_prev_ignorati:
+                df_prev_res["_key"] = list(zip(df_prev_res["CLIENTE"], df_prev_res["ARTICOLO"]))
+                df_prev_res = df_prev_res[~df_prev_res["_key"].isin(set_prev_ignorati)].drop(columns=["_key"])
+
+            n_ritardo = len(df_prev_res[df_prev_res["STATO"].str.contains("Ritardo")])
+            n_corr = len(df_prev_res[df_prev_res["STATO"].str.contains("Mese Corrente")])
+            n_prox = len(df_prev_res[df_prev_res["STATO"].str.contains("Mese Successivo")])
+
+            m1, m2, m3 = st.columns(3)
+            m1.metric("🔴 In Ritardo (Da Sollecitare)", n_ritardo)
+            m2.metric("🟡 Previsti Questo Mese", n_corr)
+            m3.metric("🔵 Previsti Mese Successivo", n_prox)
+
+            st.divider()
+
+            col_pf1, col_pf2, col_pf3 = st.columns([1.5, 1.5, 1])
+
+            mostra_declassati = col_pf3.checkbox("Includi '⚪ Articolo Declassato'", value=False, key="chk_show_decl")
+
+            if not mostra_declassati:
+                df_prev_res_filtered = df_prev_res[~df_prev_res["STATO"].str.contains("Declassato")].copy()
+            else:
+                df_prev_res_filtered = df_prev_res.copy()
+
+            stati_disponibili = ["Tutti"] + sorted(list(df_prev_res_filtered["STATO"].unique()))
+            sel_stato = col_pf1.selectbox("Filtra per STATO:", stati_disponibili, key="prev_stato_filter")
+
+            clienti_prev = ["Tutti"] + sorted(list(df_prev_res_filtered["CLIENTE"].unique()))
+            sel_cli_p = col_pf2.selectbox("Filtra per CLIENTE:", clienti_prev, key="prev_cli_filter")
+
+            df_prev_disp = df_prev_res_filtered.copy()
+
+            if sel_stato != "Tutti":
+                df_prev_disp = df_prev_disp[df_prev_disp["STATO"] == sel_stato]
+
+            if sel_cli_p != "Tutti":
+                df_prev_disp = df_prev_disp[df_prev_disp["CLIENTE"] == sel_cli_p]
+
+            st.caption(f"Righe trovate: **{len(df_prev_disp)}**")
+
+            df_prev_edit = df_prev_disp.copy()
+            df_prev_edit.insert(0, "Seleziona", st.session_state.select_all_prev_state)
+
+            edited_prev_df = st.data_editor(
+                df_prev_edit,
+                use_container_width=True,
+                hide_index=True,
+                key="editor_previsionale"
+            )
+
+            col_p_sel1, col_p_sel2, col_p_ign = st.columns([1.5, 1.5, 3])
+
+            with col_p_sel1:
+                if st.button("☑️ Seleziona Tutte", key="btn_sel_all_prev"):
+                    st.session_state.select_all_prev_state = True
+                    st.rerun()
+
+            with col_p_sel2:
+                if st.button("⬜ Deseleziona Tutte", key="btn_unsel_all_prev"):
+                    st.session_state.select_all_prev_state = False
+                    st.rerun()
+
+            with col_p_ign:
+                righe_selezionate_prev = edited_prev_df[edited_prev_df["Seleziona"] == True]
+                count_prev_sel = len(righe_selezionate_prev)
+                
+                if st.button(f"🚫 Escludi Selezionati ({count_prev_sel})", type="primary", key="btn_ign_selected_prev"):
+                    if count_prev_sel > 0:
+                        coppie_da_escludere = list(zip(righe_selezionate_prev["CLIENTE"], righe_selezionate_prev["ARTICOLO"]))
+                        if aggiungi_articoli_ignorati_prev_cloud(coppie_da_escludere):
+                            st.session_state.articoli_ignorati_prev_list = carica_articoli_ignorati_prev_cloud()
+                            st.session_state.select_all_prev_state = False
+                            st.success(f"Esclusi {count_prev_sel} articoli dal previsionale!")
+                            st.rerun()
+                    else:
+                        st.warning("Spunta almeno una riga dalla tabella tramite la casella 'Seleziona'.")
+
+            st.divider()
+
+            if st.session_state.articoli_ignorati_prev_list:
+                with st.expander(f"👁️ Gestisci Articoli Esclusi dal Previsionale ({len(st.session_state.articoli_ignorati_prev_list)})"):
+                    st.caption("Elenco delle coppie Cliente - Articolo attualmente escluse dal previsionale:")
+                    
+                    opzioni_ripristino_prev = [f"{c} ➔ {a}" for c, a in st.session_state.articoli_ignorati_prev_list]
+                    
+                    c_prst1, c_prst2 = st.columns([3, 1])
+                    scelta_rst_prev = c_prst1.selectbox("Seleziona una voce da ripristinare:", ["-- Seleziona --"] + sorted(opzioni_ripristino_prev), key="sel_prev_rst")
+                    
+                    if c_prst2.button("↩️ Ripristina Selezionato", key="btn_rst_single_prev"):
+                        if scelta_rst_prev != "-- Seleziona --":
+                            cli_rst, art_rst = scelta_rst_prev.split(" ➔ ", 1)
+                            if rimuovi_articolo_ignorato_prev_cloud(cli_rst, art_rst):
+                                st.session_state.articoli_ignorati_prev_list = carica_articoli_ignorati_prev_cloud()
+                                st.success(f"Ripristinato: {scelta_rst_prev}")
+                                st.rerun()
+
+                    if st.button("🔄 Ripristina TUTTI gli articoli esclusi", type="primary", key="btn_rst_all_prev"):
+                        if svuota_articoli_ignorati_prev_cloud():
+                            st.session_state.articoli_ignorati_prev_list = []
+                            st.success("Tutti gli articoli del previsionale sono stati ripristinati!")
+                            st.rerun()
+        else:
+            st.info("Nessuna previsione di riordine calcolata per il periodo attuale.")
+    else:
+        st.warning("Database vuoto. Carica dei PDF per generare il previsionale.")
+
+# =========================================================
+# SCHEDA 6: MONITORAGGIO VISITE GOOGLE CALENDAR
+# =========================================================
+with tab_visite:
+    st.subheader("📅 Monitoraggio Visite Clienti (Google Calendar)")
+    st.markdown("Il sistema scansiona in sola lettura il tuo **Google Calendar**, riconosce i titoli degli eventi associandoli ai clienti del database e calcola da quanti giorni non li visiti.")
+
+    df_vis_base = st.session_state.db_ordini
+
+    if not df_vis_base.empty:
+        list_cli_db_tutti = sorted([x for x in df_vis_base["CLIENTE"].unique() if str(x).strip()])
+        set_cli_ignorati = set(st.session_state.clienti_ignorati_visite_list)
+        
+        list_cli_db = [c for c in list_cli_db_tutti if c not in set_cli_ignorati]
+
+        col_v1, col_v2 = st.columns([3, 1])
+
+        with col_v2:
+            st.write("")
+            btn_scan_cal = st.button("🔄 Scansiona Google Calendar", type="primary", key="btn_scan_cal")
+
+        if btn_scan_cal or "df_visite_cache" not in st.session_state:
+            with st.spinner("Scansione di Google Calendar in corso..."):
+                df_vis_res = ottieni_visite_calendar(list_cli_db, st.session_state.mappa_custom_calendar)
+                st.session_state.df_visite_cache = df_vis_res
+
+        df_vis_display = st.session_state.get("df_visite_cache", pd.DataFrame())
+
+        if not df_vis_display.empty:
+            df_vis_display = df_vis_display[~df_vis_display["CLIENTE"].isin(set_cli_ignorati)]
+
+            n_prog = len(df_vis_display[df_vis_display["STATO VISITA"] == "🔵 Programmata"])
+            n_rec = len(df_vis_display[df_vis_display["STATO VISITA"].str.contains("Recente")])
+            n_prog_std = len(df_vis_display[df_vis_display["STATO VISITA"].str.contains("Programmare")])
+            n_urg = len(df_vis_display[df_vis_display["STATO VISITA"].str.contains("Urgente")])
+
+            v_m0, v_m1, v_m2, v_m3 = st.columns(4)
+            v_m0.metric("🔵 Visita Programmata", n_prog)
+            v_m1.metric("🟢 Visitati (< 60 gg)", n_rec)
+            v_m2.metric("🟡 Da Programmare (60-90 gg)", n_prog_std)
+            v_m3.metric("🔴 Visita Urgente (> 90 gg)", n_urg)
+
+            st.divider()
+
+            col_vf1, col_vf2 = st.columns(2)
+            stati_v = ["Tutti"] + sorted(list(df_vis_display["STATO VISITA"].unique()))
+            sel_st_v = col_vf1.selectbox("Filtra per STATO VISITA:", stati_v, key="vf_stato")
+            
+            sel_cli_v = col_vf2.selectbox("Filtra per CLIENTE:", ["Tutti"] + list_cli_db, key="vf_cli")
+
+            df_vis_filt = df_vis_display.copy()
+            if sel_st_v != "Tutti":
+                df_vis_filt = df_vis_filt[df_vis_filt["STATO VISITA"] == sel_st_v]
+            if sel_cli_v != "Tutti":
+                df_vis_filt = df_vis_filt[df_vis_filt["CLIENTE"] == sel_cli_v]
+
+            df_vis_edit = df_vis_filt.copy()
+            df_vis_edit.insert(0, "Seleziona", st.session_state.select_all_visite_state)
+
+            edited_vis_df = st.data_editor(
+                df_vis_edit,
+                use_container_width=True,
+                num_rows="dynamic",
+                key="editor_visite"
+            )
+
+            col_v_sel1, col_v_sel2, col_v_ign = st.columns([1.5, 1.5, 3])
+
+            with col_v_sel1:
+                if st.button("☑️ Seleziona Tutte", key="btn_sel_all_vis"):
+                    st.session_state.select_all_visite_state = True
+                    st.rerun()
+
+            with col_v_sel2:
+                if st.button("⬜ Deseleziona Tutte", key="btn_unsel_all_vis"):
+                    st.session_state.select_all_visite_state = False
+                    st.rerun()
+
+            with col_v_ign:
+                clienti_selezionati_vis = edited_vis_df[edited_vis_df["Seleziona"] == True]["CLIENTE"].tolist()
+                count_vis_sel = len(clienti_selezionati_vis)
+                
+                if st.button(f"🚫 Escludi Selezionati ({count_vis_sel})", type="primary", key="btn_ign_selected_vis"):
+                    if count_vis_sel > 0:
+                        if aggiungi_clienti_ignorati_visite_cloud(clienti_selezionati_vis):
+                            st.session_state.clienti_ignorati_visite_list = carica_clienti_ignorati_visite_cloud()
+                            st.session_state.df_visite_cache = pd.DataFrame()
+                            st.session_state.select_all_visite_state = False
+                            st.success(f"Esclusi {count_vis_sel} clienti con successo!")
+                            st.rerun()
+                    else:
+                        st.warning("Spunta almeno un cliente dalla tabella tramite la casella 'Seleziona'.")
+
+            st.divider()
+
+            if st.session_state.clienti_ignorati_visite_list:
+                with st.expander(f"👁️ Gestisci Clienti Esclusi ({len(st.session_state.clienti_ignorati_visite_list)})"):
+                    st.caption("Elenco dei clienti attualmente esclusi dal monitoraggio delle visite:")
+                    
+                    c_rst1, c_rst2 = st.columns([3, 1])
+                    cli_da_ripristinare = c_rst1.selectbox("Seleziona un cliente da ripristinare:", ["-- Seleziona --"] + sorted(st.session_state.clienti_ignorati_visite_list), key="sel_cli_rst_vis")
+                    
+                    if c_rst2.button("↩️ Ripristina Selezionato", key="btn_rst_single_cli"):
+                        if cli_da_ripristinare != "-- Seleziona --":
+                            if rimuovi_cliente_ignorato_visita_cloud(cli_da_ripristinare):
+                                st.session_state.clienti_ignorati_visite_list = carica_clienti_ignorati_visite_cloud()
+                                st.session_state.df_visite_cache = pd.DataFrame()
+                                st.success(f"Cliente '{cli_da_ripristinare}' ripristinato!")
+                                st.rerun()
+
+                    if st.button("🔄 Ripristina TUTTI i clienti esclusi", type="primary", key="btn_rst_all_cli"):
+                        if svuota_clienti_ignorati_visite_cloud():
+                            st.session_state.clienti_ignorati_visite_list = []
+                            st.session_state.df_visite_cache = pd.DataFrame()
+                            st.success("Tutti i clienti sono stati ripristinati con successo!")
+                            st.rerun()
+
+            with st.expander("🔗 Mappatura Manuale / Sinonimi Titoli Calendar"):
+                st.caption("Se su Google Calendar scrivi nomi abbreviati (es. 'MARTIGNONI' invece del nome completo), puoi associare qui la parola chiave alla ragione sociale esatta.")
+                
+                # Aggiunta nuova regola
+                c_map1, c_map2, c_map3 = st.columns([2, 2, 1])
+                txt_keyword = c_map1.text_input("Parola chiave in Calendar (es. MARTIGNONI):", key="txt_kw_cal")
+                sel_cli_map = c_map2.selectbox("Cliente Corrispondente nel DB:", ["-- Seleziona --"] + list_cli_db, key="sel_cli_map")
+
+                with c_map3:
+                    st.write("")
+                    st.write("")
+                    btn_add_rule = st.button("➕ Aggiungi Regola", key="btn_add_map")
+
+                if btn_add_rule:
+                    kw_clean = txt_keyword.strip()
+                    if kw_clean and sel_cli_map != "-- Seleziona --":
+                        if aggiungi_mappatura_calendar_cloud(kw_clean, sel_cli_map):
+                            st.session_state.mappa_custom_calendar = carica_mappatura_calendar_cloud()
+                            st.session_state.df_visite_cache = pd.DataFrame()
+                            st.success(f"Regola salvata nel Cloud: '{kw_clean}' ➔ '{sel_cli_map}'")
+                            st.rerun()
+                    else:
+                        st.warning("Inserisci sia la parola chiave che il cliente da abbinare.")
+
+                st.divider()
+
+                # Gestione e Rimozione Regole Esistenti
+                st.subheader("📋 Regole di Abbinamento Salvate nel Cloud")
+                if st.session_state.mappa_custom_calendar:
+                    opzioni_regole = [f"'{kw}' ➔ '{cl}'" for kw, cl in st.session_state.mappa_custom_calendar.items()]
+                    
+                    c_del1, c_del2 = st.columns([3, 1])
+                    regola_da_rimuovere = c_del1.selectbox(
+                        "Seleziona una regola da eliminare:", 
+                        ["-- Seleziona regola --"] + sorted(opzioni_regole), 
+                        key="sel_rule_to_delete"
+                    )
+
+                    with c_del2:
+                        st.write("")
+                        st.write("")
+                        btn_del_single_rule = st.button("🗑️ Rimuovi Regola", key="btn_del_rule")
+
+                    if btn_del_single_rule:
+                        if regola_da_rimuovere != "-- Seleziona regola --":
+                            kw_target = regola_da_rimuovere.split(" ➔ ")[0].strip("'")
+                            if rimuovi_mappatura_calendar_cloud(kw_target):
+                                st.session_state.mappa_custom_calendar = carica_mappatura_calendar_cloud()
+                                st.session_state.df_visite_cache = pd.DataFrame()
+                                st.success(f"Regola per '{kw_target}' eliminata!")
+                                st.rerun()
+
+                    st.write("")
+                    if st.button("🧹 Svuota TUTTE le regole di mappatura", key="btn_clear_all_rules"):
+                        if svuota_mappatura_calendar_cloud():
+                            st.session_state.mappa_custom_calendar = {}
+                            st.session_state.df_visite_cache = pd.DataFrame()
+                            st.success("Tutte le regole di mappatura sono state eliminate dal Cloud!")
+                            st.rerun()
+                else:
+                    st.info("Nessuna regola manuale salvata nel Cloud al momento.")
