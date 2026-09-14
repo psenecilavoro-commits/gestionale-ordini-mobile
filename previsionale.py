@@ -13,7 +13,10 @@ def calcola_previsionale(df_ordini):
     df["DATA_DT"] = pd.to_datetime(df["CONSEGNA"], format="%d/%m/%Y", errors="coerce")
     df = df.dropna(subset=["DATA_DT"]).sort_values(["CLIENTE", "ARTICOLO", "DATA_DT"])
 
-    oggi = datetime.now()
+    # Usiamo il solo giorno corrente, senza componente oraria.
+    # Le date di consegna arrivano dal database come date senza orario:
+    # normalizzare "oggi" evita confronti incoerenti durante la giornata.
+    oggi = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     mese_corrente = oggi.month
     anno_corrente = oggi.year
     
@@ -44,7 +47,10 @@ def calcola_previsionale(df_ordini):
             intervallo_medio = 60
 
         data_stimata = ultima_data + timedelta(days=int(intervallo_medio))
-        ha_ordine_futuro = any(d >= oggi.replace(day=1) for d in date_consegne)
+        # "Già ordinato" significa che esiste davvero una consegna da oggi in poi.
+        # Una consegna già avvenuta nei primi giorni del mese non deve più
+        # far risultare automaticamente l'articolo come già ordinato.
+        ha_ordine_futuro = any(d >= oggi for d in date_consegne)
 
         stesso_mese_corr = (data_stimata.month == mese_corrente and data_stimata.year == anno_corrente)
         stesso_mese_prox = (data_stimata.month == mese_prossimo and data_stimata.year == anno_prossimo)
