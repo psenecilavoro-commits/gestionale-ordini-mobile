@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from rapidfuzz import fuzz
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -11,6 +12,12 @@ from googleapiclient.discovery import build
 # CONNESSIONE GOOGLE CALENDAR API (VIA SERVICE ACCOUNT)
 # ---------------------------------------------------------
 SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
+
+# Il gestionale lavora con clienti e visite in Italia.
+# Tutti i confronti "oggi / passato / futuro" vengono quindi eseguiti
+# nel fuso Europe/Rome, mentre le query Google Calendar vengono inviate
+# in UTC con timestamp RFC3339 terminante in Z.
+CALENDAR_TIMEZONE = ZoneInfo("Europe/Rome")
 
 @st.cache_resource
 def get_calendar_service():
@@ -30,6 +37,60 @@ def get_calendar_service():
     except Exception as e:
         st.error(f"Errore di connessione a Google Calendar API: {e}")
         return None
+
+# ---------------------------------------------------------
+# GESTIONE DATA / ORA E TIMEZONE
+# ---------------------------------------------------------
+def _to_rfc3339_utc(dt_locale):
+    """
+    Converte un datetime timezone-aware in UTC RFC3339 per Google Calendar.
+    Esempio: 2026-09-15T10:00:00+02:00 -> 2026-09-15T08:00:00Z
+    """
+    if dt_locale.tzinfo is None:
+        raise ValueError("Il datetime deve essere timezone-aware.")
+
+    return (
+        dt_locale
+        .astimezone(timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _data_locale_evento(start_evento):
+    """
+    Restituisce la data dell'evento nel fuso Europe/Rome.
+
+    - eventi con dateTime: interpreta correttamente offset / UTC e converte
+      nel fuso locale prima di ricavare il giorno;
+    - eventi all-day con date: mantiene direttamente la data di calendario.
+    """
+    if not start_evento:
+        return None
+
+    data_ora = start_evento.get("dateTime")
+    if data_ora:
+        try:
+            dt_evento = datetime.fromisoformat(data_ora.replace("Z", "+00:00"))
+
+            # Google normalmente fornisce un offset. Il fallback evita comunque
+            # confronti naive/aware in caso di dati anomali.
+            if dt_evento.tzinfo is None:
+                dt_evento = dt_evento.replace(tzinfo=CALENDAR_TIMEZONE)
+
+            return dt_evento.astimezone(CALENDAR_TIMEZONE).date()
+        except (TypeError, ValueError):
+            return None
+
+    data_intera = start_evento.get("date")
+    if data_intera:
+        try:
+            return datetime.strptime(data_intera, "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            return None
+
+    return None
+
 
 # ---------------------------------------------------------
 # PAGINAZIONE GOOGLE CALENDAR
@@ -111,9 +172,15 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
 
         st.caption(f"Calendari identificati per la scansione: {CALENDAR_IDS}")
 
-        oggi = datetime.now()
-        time_min = (oggi - timedelta(days=365)).isoformat() + 'Z'
-        time_max = (oggi + timedelta(days=90)).isoformat() + 'Z'
+        ora_locale = datetime.now(CALENDAR_TIMEZONE)
+        oggi = ora_locale.date()
+
+        time_min = _to_rfc3339_utc(
+            ora_locale - timedelta(days=365)
+        )
+        time_max = _to_rfc3339_utc(
+            ora_locale + timedelta(days=90)
+        )
         
         visite_passate = {}
         visite_future = {}
@@ -145,11 +212,8 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
                 if not summary:
                     continue
 
-                start = event['start'].get('dateTime', event['start'].get('date'))
-                try:
-                    str_date = start.split('T')[0]
-                    data_evento = datetime.strptime(str_date, "%Y-%m-%d")
-                except Exception:
+                data_evento = _data_locale_evento(event.get("start", {}))
+                if data_evento is None:
                     continue
 
                 eventi_letti_debug.append(f"[{cal_id[:15]}...] {data_evento.strftime('%d/%m/%Y')} - {summary}")
@@ -178,7 +242,7 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
                                 break
 
                 if cliente_abbinato:
-                    if data_evento >= oggi.replace(hour=0, minute=0, second=0, microsecond=0):
+                    if data_evento >= oggi:
                         if cliente_abbinato not in visite_future or data_evento < visite_future[cliente_abbinato]:
                             visite_future[cliente_abbinato] = data_evento
                     else:
@@ -200,7 +264,7 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
 
             if ha_futura:
                 u_visita = visite_future[cliente]
-                gg_futuri = (u_visita - oggi).days + 1
+                gg_futuri = (u_visita - oggi).days
                 str_visita = u_visita.strftime("%d/%m/%Y")
                 str_gg = f"-{gg_futuri}"
                 stato_visita = "🔵 Programmata"
