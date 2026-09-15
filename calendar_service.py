@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import re
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from rapidfuzz import fuzz
@@ -150,6 +151,189 @@ def _elenca_eventi_calendar(service, calendar_id, time_min, time_max):
 
 
 # ---------------------------------------------------------
+# MATCHING ROBUSTO EVENTO CALENDAR -> CLIENTE
+# ---------------------------------------------------------
+_PAROLE_DA_IGNORARE_CLIENTE = {
+    "spa", "srl", "srls", "snc", "sas", "ss", "inc", "ltd",
+    "soc", "societa", "cooperativa", "coop", "agricola", "agr",
+    "unipersonale", "di", "del", "della", "delle", "dei", "degli",
+    "il", "lo", "la", "le", "e"
+}
+
+
+def _pulisci_testo_calendar(testo):
+    """
+    Normalizzazione condivisa per titoli Calendar e ragioni sociali.
+    """
+    if testo is None:
+        return ""
+
+    testo = str(testo).strip()
+    if not testo:
+        return ""
+
+    testo = (
+        unicodedata
+        .normalize("NFKD", testo)
+        .encode("ascii", "ignore")
+        .decode("ascii")
+        .lower()
+    )
+    testo = re.sub(r"[^a-z0-9]+", " ", testo)
+
+    tokens = [
+        token
+        for token in testo.split()
+        if len(token) > 1 and token not in _PAROLE_DA_IGNORARE_CLIENTE
+    ]
+
+    return " ".join(tokens)
+
+
+def _acronimo_cliente_corto(cliente_originale, cliente_clean):
+    """
+    Consente acronimi reali corti (es. WFT, CPM) senza rendere
+    permissivi tutti i token brevi.
+    """
+    tokens_clean = cliente_clean.split()
+    if len(tokens_clean) != 1:
+        return False
+
+    token = tokens_clean[0]
+    if len(token) > 4:
+        return False
+
+    primo_token_originale = re.split(
+        r"[^A-Za-z0-9]+",
+        str(cliente_originale).strip()
+    )[0]
+
+    return (
+        primo_token_originale.upper() == primo_token_originale
+        and primo_token_originale.lower() == token
+        and len(primo_token_originale) >= 2
+    )
+
+
+def _abbina_cliente_automatico(summary, clienti_db_clean):
+    """
+    Matching automatico prudente:
+    1) match esatto normalizzato;
+    2) contenimento a parole scegliendo il candidato più specifico;
+    3) fuzzy globale: soglia >= 90 e vantaggio >= 8 sul secondo.
+
+    Se il risultato è ambiguo restituisce None.
+    """
+    summary_clean = _pulisci_testo_calendar(summary)
+    if not summary_clean:
+        return None
+
+    summary_tokens = set(summary_clean.split())
+
+    candidati = [
+        (cliente_orig, cliente_clean)
+        for cliente_orig, cliente_clean in clienti_db_clean.items()
+        if cliente_clean
+    ]
+    if not candidati:
+        return None
+
+    match_esatti = [
+        cliente_orig
+        for cliente_orig, cliente_clean in candidati
+        if summary_clean == cliente_clean
+    ]
+
+    if len(match_esatti) == 1:
+        return match_esatti[0]
+    if len(match_esatti) > 1:
+        return None
+
+    candidati_contenuti = []
+
+    for cliente_orig, cliente_clean in candidati:
+        cliente_tokens = set(cliente_clean.split())
+        if not cliente_tokens:
+            continue
+
+        if cliente_tokens.issubset(summary_tokens):
+            if len(cliente_tokens) == 1:
+                token = next(iter(cliente_tokens))
+                if len(token) < 5 and not _acronimo_cliente_corto(
+                    cliente_orig,
+                    cliente_clean
+                ):
+                    continue
+
+            specificita = (
+                len(cliente_tokens),
+                len(cliente_clean),
+            )
+            candidati_contenuti.append((specificita, cliente_orig))
+
+    if candidati_contenuti:
+        candidati_contenuti.sort(reverse=True)
+        migliore_specificita = candidati_contenuti[0][0]
+
+        migliori = [
+            cliente
+            for specificita, cliente in candidati_contenuti
+            if specificita == migliore_specificita
+        ]
+
+        if len(migliori) == 1:
+            return migliori[0]
+
+        return None
+
+    risultati_fuzzy = []
+
+    for cliente_orig, cliente_clean in candidati:
+        ratio = fuzz.ratio(summary_clean, cliente_clean)
+        token_set = fuzz.token_set_ratio(summary_clean, cliente_clean)
+        punteggio = max(ratio, token_set)
+
+        if len(summary_clean) >= 6 and len(cliente_clean) >= 6:
+            punteggio = max(
+                punteggio,
+                fuzz.partial_ratio(summary_clean, cliente_clean)
+            )
+
+        risultati_fuzzy.append((float(punteggio), cliente_orig))
+
+    risultati_fuzzy.sort(key=lambda x: x[0], reverse=True)
+
+    best_score, best_cliente = risultati_fuzzy[0]
+    second_score = (
+        risultati_fuzzy[1][0]
+        if len(risultati_fuzzy) > 1
+        else 0.0
+    )
+
+    if best_score >= 90 and (best_score - second_score) >= 8:
+        return best_cliente
+
+    return None
+
+
+def _abbina_cliente_calendar(summary, clienti_db_clean, mappa_custom=None):
+    """
+    Le regole manuali mantengono sempre la priorità.
+    """
+    if mappa_custom is None:
+        mappa_custom = {}
+
+    summary_casefold = str(summary or "").casefold()
+
+    for parola_chiave, cliente_reale in mappa_custom.items():
+        parola = str(parola_chiave or "").strip()
+        if parola and parola.casefold() in summary_casefold:
+            return cliente_reale
+
+    return _abbina_cliente_automatico(summary, clienti_db_clean)
+
+
+# ---------------------------------------------------------
 # ESTRAZIONE EVENTI GOOGLE CALENDAR (VERSIONE DEBUG & AUTO-DISCOVERY)
 # ---------------------------------------------------------
 def ottieni_visite_calendar(lista_clienti_db, mappa_custom=None):
@@ -189,14 +373,11 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom=None):
         visite_future = {}
         eventi_letti_debug = []
 
-        def pulisci_testo(t):
-            if not t:
-                return ""
-            t = re.sub(r"\b(SPA|SRL|S\.P\.A\.|S\.R\.L\.|SS|S\.S\.|INC|LTD)\b", "", t, flags=re.IGNORECASE)
-            t = re.sub(r"[^\w\s]", " ", t)
-            return re.sub(r"\s+", " ", t).strip().lower()
-
-        clienti_db_clean = {c: pulisci_testo(c) for c in lista_clienti_db if str(c).strip()}
+        clienti_db_clean = {
+            c: _pulisci_testo_calendar(c)
+            for c in lista_clienti_db
+            if str(c).strip()
+        }
 
         for cal_id in CALENDAR_IDS:
             try:
@@ -221,28 +402,11 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom=None):
 
                 eventi_letti_debug.append(f"[{cal_id[:15]}...] {data_evento.strftime('%d/%m/%Y')} - {summary}")
 
-                cliente_abbinato = None
-
-                # 1. Regole manuali
-                for parola_chiave, cliente_reale in mappa_custom.items():
-                    if parola_chiave.lower() in summary.lower():
-                        cliente_abbinato = cliente_reale
-                        break
-
-                # 2. Match automatico
-                if not cliente_abbinato:
-                    summary_clean = pulisci_testo(summary)
-                    for cliente_orig, cliente_clean in clienti_db_clean.items():
-                        if len(cliente_clean) >= 2:
-                            parole_summary = set(summary_clean.split())
-                            parole_cliente = set(cliente_clean.split())
-                            
-                            if parole_summary and (parole_summary.issubset(parole_cliente) or parole_cliente.issubset(parole_summary)):
-                                cliente_abbinato = cliente_orig
-                                break
-                            elif fuzz.partial_ratio(summary_clean, cliente_clean) >= 85:
-                                cliente_abbinato = cliente_orig
-                                break
+                cliente_abbinato = _abbina_cliente_calendar(
+                    summary,
+                    clienti_db_clean,
+                    mappa_custom
+                )
 
                 if cliente_abbinato:
                     if data_evento >= oggi:
