@@ -32,6 +32,63 @@ def get_calendar_service():
         return None
 
 # ---------------------------------------------------------
+# PAGINAZIONE GOOGLE CALENDAR
+# ---------------------------------------------------------
+def _elenca_calendari_accessibili(service):
+    """
+    Recupera tutti i calendari accessibili al Service Account,
+    seguendo eventuali nextPageToken.
+    """
+    calendar_ids = []
+    page_token = None
+
+    while True:
+        richiesta = service.calendarList().list(pageToken=page_token)
+        risposta = richiesta.execute()
+
+        for calendario in risposta.get("items", []):
+            calendar_id = calendario.get("id")
+            if calendar_id:
+                calendar_ids.append(calendar_id)
+
+        page_token = risposta.get("nextPageToken")
+        if not page_token:
+            break
+
+    return calendar_ids
+
+
+def _elenca_eventi_calendar(service, calendar_id, time_min, time_max):
+    """
+    Recupera tutti gli eventi del calendario nel periodo richiesto.
+
+    Google Calendar può restituire più pagine anche con maxResults=2500:
+    il ciclo segue nextPageToken finché non esistono altre pagine.
+    """
+    eventi = []
+    page_token = None
+
+    while True:
+        richiesta = service.events().list(
+            calendarId=calendar_id,
+            timeMin=time_min,
+            timeMax=time_max,
+            maxResults=2500,
+            singleEvents=True,
+            orderBy="startTime",
+            pageToken=page_token,
+        )
+        risposta = richiesta.execute()
+        eventi.extend(risposta.get("items", []))
+
+        page_token = risposta.get("nextPageToken")
+        if not page_token:
+            break
+
+    return eventi
+
+
+# ---------------------------------------------------------
 # ESTRAZIONE EVENTI GOOGLE CALENDAR (VERSIONE DEBUG & AUTO-DISCOVERY)
 # ---------------------------------------------------------
 def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
@@ -44,9 +101,7 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
         # Recupera automaticamente tutti i calendari accessibili al Service Account
         CALENDAR_IDS = []
         try:
-            cal_list_res = service.calendarList().list().execute().get('items', [])
-            for c in cal_list_res:
-                CALENDAR_IDS.append(c['id'])
+            CALENDAR_IDS = _elenca_calendari_accessibili(service)
         except Exception as e:
             st.warning(f"Impossibile elencare i calendari in automatico: {e}")
 
@@ -75,15 +130,12 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
 
         for cal_id in CALENDAR_IDS:
             try:
-                events_result = service.events().list(
-                    calendarId=cal_id, 
-                    timeMin=time_min,
-                    timeMax=time_max,
-                    maxResults=2500, 
-                    singleEvents=True,
-                    orderBy='startTime'
-                ).execute()
-                events = events_result.get('items', [])
+                events = _elenca_eventi_calendar(
+                    service,
+                    cal_id,
+                    time_min,
+                    time_max
+                )
             except Exception as err_cal:
                 st.error(f"Errore nella lettura del calendario '{cal_id}': {err_cal}")
                 continue
