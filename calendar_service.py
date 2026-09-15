@@ -152,7 +152,10 @@ def _elenca_eventi_calendar(service, calendar_id, time_min, time_max):
 # ---------------------------------------------------------
 # ESTRAZIONE EVENTI GOOGLE CALENDAR (VERSIONE DEBUG & AUTO-DISCOVERY)
 # ---------------------------------------------------------
-def ottieni_visite_calendar(lista_clienti_db, mappa_custom={}):
+def ottieni_visite_calendar(lista_clienti_db, mappa_custom=None):
+    if mappa_custom is None:
+        mappa_custom = {}
+
     service = get_calendar_service()
     if not service:
         st.error("Servizio Google Calendar non inizializzato. Controlla i Secrets 'gcp_service_account'.")
