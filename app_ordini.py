@@ -964,6 +964,40 @@ if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
                         df_prev_disp["PRIORITÀ SOLLECITO"] == sel_priorita
                     ]
 
+                # 8B: ordinamento esclusivamente VISIVO, dopo tutti i filtri.
+                # Manteniamo l'ordine preesistente per le righe non in ritardo
+                # e, a parità di priorità/giorni, anche per quelle in ritardo.
+                if "PRIORITÀ SOLLECITO" in df_prev_disp.columns and "RITARDO STIMATO (GG)" in df_prev_disp.columns:
+                    ordine_priorita = {
+                        "🔴 Alta": 0,
+                        "🟠 Media": 1,
+                        "⚪ Da verificare": 2,
+                    }
+                    df_prev_disp = df_prev_disp.copy()
+                    df_prev_disp["_ordine_priorita_ui"] = (
+                        df_prev_disp["PRIORITÀ SOLLECITO"]
+                        .map(ordine_priorita)
+                        .fillna(3)
+                        .astype(int)
+                    )
+                    df_prev_disp["_ritardo_ui"] = (
+                        pd.to_numeric(
+                            df_prev_disp["RITARDO STIMATO (GG)"],
+                            errors="coerce",
+                        )
+                        .fillna(-1)
+                    )
+                    df_prev_disp = (
+                        df_prev_disp
+                        .sort_values(
+                            by=["_ordine_priorita_ui", "_ritardo_ui"],
+                            ascending=[True, False],
+                            kind="mergesort",
+                        )
+                        .drop(columns=["_ordine_priorita_ui", "_ritardo_ui"])
+                        .reset_index(drop=True)
+                    )
+
                 st.caption(f"Righe trovate: **{len(df_prev_disp)}**")
                 st.caption(
                     "☎️ **PRIORITÀ SOLLECITO**: 🔴 Alta = affidabilità Alta, oppure Media con ≥30 gg di ritardo · "
