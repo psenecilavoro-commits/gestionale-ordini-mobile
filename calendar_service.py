@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 import re
 import unicodedata
-from datetime import datetime, timedelta, timezone
+import hashlib
+from datetime import datetime, date, timedelta, timezone
 from zoneinfo import ZoneInfo
 from rapidfuzz import fuzz
 from google.oauth2 import service_account
@@ -334,16 +335,150 @@ def _abbina_cliente_calendar(summary, clienti_db_clean, mappa_custom=None):
 
 
 # ---------------------------------------------------------
+# EVENTI NON ABBINATI E DECISIONI MANUALI (STEP 8C)
+# ---------------------------------------------------------
+def _motivo_non_abbinamento(titolo, clienti_db_clean):
+    """Segnala un'eventuale ambiguità, senza forzare l'abbinamento."""
+    parole_titolo = {
+        t for t in _pulisci_testo_calendar(titolo).split() if len(t) >= 4
+    }
+    candidati = [
+        nome for nome, pulito in clienti_db_clean.items()
+        if parole_titolo.intersection(pulito.split())
+    ]
+    if len(candidati) >= 2:
+        return "Possibile ambiguità tra più clienti"
+    return "Nessuna corrispondenza sufficientemente sicura"
+
+
+def elabora_eventi_calendar(
+    eventi, lista_clienti_db, mappa_custom=None,
+    decisioni_eventi=None, clienti_da_monitorare=None, oggi=None
+):
+    """Elabora gli eventi gia' letti, senza richiamare Google Calendar.
+
+    Le decisioni sono indicizzate da (calendar_id, event_id), non dal titolo:
+    una regola 'ignora' o 'associa' riguarda SOLO quell'occorrenza.
+    Gli ignorati si vedono fino al giorno dell'evento incluso.
+    """
+    if mappa_custom is None:
+        mappa_custom = {}
+    if decisioni_eventi is None:
+        decisioni_eventi = {}
+    if oggi is None:
+        oggi = datetime.now(CALENDAR_TIMEZONE).date()
+    if clienti_da_monitorare is None:
+        clienti_da_monitorare = lista_clienti_db
+
+    clienti_validi = set(lista_clienti_db)
+    clienti_monitorati = set(clienti_da_monitorare)
+    clienti_db_clean = {
+        cliente: _pulisci_testo_calendar(cliente)
+        for cliente in lista_clienti_db if str(cliente).strip()
+    }
+    visite_passate = {}
+    visite_future = {}
+    da_verificare = []
+    ignorati = []
+
+    for evento in eventi:
+        try:
+            data_evento = date.fromisoformat(evento["data_evento"])
+        except (ValueError, TypeError, KeyError):
+            continue
+
+        chiave = (evento.get("calendar_id", ""), evento.get("event_id", ""))
+        decisione = decisioni_eventi.get(chiave, {})
+        stato = decisione.get("stato")
+
+        if stato == "ignorato":
+            if data_evento >= oggi:
+                ignorati.append(evento)
+            # Ignorare significa non considerare l'evento nemmeno nello storico.
+            continue
+
+        cliente_assegnato = decisione.get("cliente") if stato == "associato" else None
+        if cliente_assegnato and cliente_assegnato in clienti_validi:
+            cliente_abbinato = cliente_assegnato
+        else:
+            cliente_abbinato = _abbina_cliente_calendar(
+                evento.get("titolo", ""), clienti_db_clean, mappa_custom
+            )
+
+        if cliente_abbinato in clienti_validi:
+            if cliente_abbinato not in clienti_monitorati:
+                # I clienti esclusi dal monitoraggio non sono anomalie.
+                continue
+            if data_evento >= oggi:
+                if (cliente_abbinato not in visite_future
+                        or data_evento < visite_future[cliente_abbinato]):
+                    visite_future[cliente_abbinato] = data_evento
+            else:
+                if (cliente_abbinato not in visite_passate
+                        or data_evento > visite_passate[cliente_abbinato]):
+                    visite_passate[cliente_abbinato] = data_evento
+        elif data_evento >= oggi and chiave[0] and chiave[1]:
+            # Appuntamenti passati non abbinati non entrano nelle anomalie.
+            da_verificare.append({
+                **evento,
+                "motivo": _motivo_non_abbinamento(
+                    evento.get("titolo", ""), clienti_db_clean
+                ),
+            })
+
+    risultati = []
+    for cliente in clienti_da_monitorare:
+        if cliente in visite_future:
+            visita = visite_future[cliente]
+            giorni = (visita - oggi).days
+            str_visita = visita.strftime("%d/%m/%Y")
+            str_gg = f"-{giorni}"
+            stato_visita = "🔵 Programmata"
+        elif cliente in visite_passate:
+            visita = visite_passate[cliente]
+            giorni = (oggi - visita).days
+            str_visita = visita.strftime("%d/%m/%Y")
+            str_gg = str(giorni)
+            if giorni < 60:
+                stato_visita = "🟢 Recente (< 60 gg)"
+            elif giorni <= 90:
+                stato_visita = "🟡 Programmare (60-90 gg)"
+            else:
+                stato_visita = "🔴 Urgente (> 90 gg)"
+        else:
+            str_visita = "Mai trovata"
+            str_gg = "N/D"
+            stato_visita = "⚪ Nessuna Visita a Calendario"
+        risultati.append({
+            "CLIENTE": cliente,
+            "DATA ULTIMA VISITA": str_visita,
+            "GG DALL'ULTIMA VISITA": str_gg,
+            "STATO VISITA": stato_visita,
+        })
+
+    df_res = pd.DataFrame(risultati)
+    if not df_res.empty:
+        df_res = df_res.sort_values(by=["STATO VISITA", "CLIENTE"])
+
+    da_verificare.sort(key=lambda item: (item["data_evento"], item["titolo"]))
+    ignorati.sort(key=lambda item: (item["data_evento"], item["titolo"]))
+    return df_res, da_verificare, ignorati
+
+
+# ---------------------------------------------------------
 # ESTRAZIONE EVENTI GOOGLE CALENDAR (VERSIONE DEBUG & AUTO-DISCOVERY)
 # ---------------------------------------------------------
-def ottieni_visite_calendar(lista_clienti_db, mappa_custom=None):
+def ottieni_visite_calendar(
+    lista_clienti_db, mappa_custom=None, restituisci_eventi=False,
+    decisioni_eventi=None, clienti_da_monitorare=None
+):
     if mappa_custom is None:
         mappa_custom = {}
 
     service = get_calendar_service()
     if not service:
         st.error("Servizio Google Calendar non inizializzato. Controlla i Secrets 'gcp_service_account'.")
-        return pd.DataFrame()
+        return (None, []) if restituisci_eventi else pd.DataFrame()
 
     try:
         # Recupera automaticamente tutti i calendari accessibili al Service Account
@@ -369,15 +504,9 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom=None):
             ora_locale + timedelta(days=90)
         )
         
-        visite_passate = {}
-        visite_future = {}
         eventi_letti_debug = []
-
-        clienti_db_clean = {
-            c: _pulisci_testo_calendar(c)
-            for c in lista_clienti_db
-            if str(c).strip()
-        }
+        eventi_minimi = []
+        calendari_letti = 0
 
         for cal_id in CALENDAR_IDS:
             try:
@@ -391,6 +520,7 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom=None):
                 st.error(f"Errore nella lettura del calendario '{cal_id}': {err_cal}")
                 continue
 
+            calendari_letti += 1
             for event in events:
                 summary = event.get('summary', '')
                 if not summary:
@@ -402,19 +532,29 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom=None):
 
                 eventi_letti_debug.append(f"[{cal_id[:15]}...] {data_evento.strftime('%d/%m/%Y')} - {summary}")
 
-                cliente_abbinato = _abbina_cliente_calendar(
-                    summary,
-                    clienti_db_clean,
-                    mappa_custom
-                )
+                # Conserviamo solo ID, titolo e giorno: niente descrizioni,
+                # partecipanti o dettagli privati degli eventi in sessione.
+                event_id = event.get("id")
+                if not event_id:
+                    # ID Google normalmente presente. Fallback deterministico
+                    # per non perdere un evento privo di ID API.
+                    identita = (
+                        str(cal_id) + "|" + str(event.get("iCalUID", ""))
+                        + "|" + str(event.get("start", {})) + "|" + summary
+                    )
+                    event_id = "fallback_" + hashlib.sha256(
+                        identita.encode("utf-8")
+                    ).hexdigest()
+                eventi_minimi.append({
+                    "calendar_id": str(cal_id),
+                    "event_id": str(event_id),
+                    "titolo": summary,
+                    "data_evento": data_evento.isoformat(),
+                })
 
-                if cliente_abbinato:
-                    if data_evento >= oggi:
-                        if cliente_abbinato not in visite_future or data_evento < visite_future[cliente_abbinato]:
-                            visite_future[cliente_abbinato] = data_evento
-                    else:
-                        if cliente_abbinato not in visite_passate or data_evento > visite_passate[cliente_abbinato]:
-                            visite_passate[cliente_abbinato] = data_evento
+        if calendari_letti == 0:
+            st.warning("Nessun calendario è stato letto: riprova la scansione.")
+            return (None, []) if restituisci_eventi else pd.DataFrame()
 
         with st.expander("🔍 Log Debug: Eventi letti"):
             st.write(f"Totale eventi analizzati: {len(eventi_letti_debug)}")
@@ -424,46 +564,18 @@ def ottieni_visite_calendar(lista_clienti_db, mappa_custom=None):
             else:
                 st.info("Nessun evento estratto dai calendari specificati.")
 
-        risultati = []
-        for cliente in lista_clienti_db:
-            ha_futura = cliente in visite_future
-            ha_passata = cliente in visite_passate
-
-            if ha_futura:
-                u_visita = visite_future[cliente]
-                gg_futuri = (u_visita - oggi).days
-                str_visita = u_visita.strftime("%d/%m/%Y")
-                str_gg = f"-{gg_futuri}"
-                stato_visita = "🔵 Programmata"
-            elif ha_passata:
-                u_visita = visite_passate[cliente]
-                gg_trascorsi = (oggi - u_visita).days
-                str_visita = u_visita.strftime("%d/%m/%Y")
-                str_gg = str(gg_trascorsi)
-                
-                if gg_trascorsi < 60:
-                    stato_visita = "🟢 Recente (< 60 gg)"
-                elif gg_trascorsi <= 90:
-                    stato_visita = "🟡 Programmare (60-90 gg)"
-                else:
-                    stato_visita = "🔴 Urgente (> 90 gg)"
-            else:
-                str_visita = "Mai trovata"
-                str_gg = "N/D"
-                stato_visita = "⚪ Nessuna Visita a Calendario"
-
-            risultati.append({
-                "CLIENTE": cliente,
-                "DATA ULTIMA VISITA": str_visita,
-                "GG DALL'ULTIMA VISITA": str_gg,
-                "STATO VISITA": stato_visita
-            })
-
-        df_res = pd.DataFrame(risultati)
-        if not df_res.empty:
-            df_res = df_res.sort_values(by=["STATO VISITA", "CLIENTE"])
+        df_res, _, _ = elabora_eventi_calendar(
+            eventi_minimi,
+            lista_clienti_db,
+            mappa_custom,
+            decisioni_eventi=decisioni_eventi,
+            clienti_da_monitorare=clienti_da_monitorare,
+            oggi=oggi,
+        )
+        if restituisci_eventi:
+            return df_res, eventi_minimi
         return df_res
 
     except Exception as e:
         st.error(f"Errore nella lettura del Google Calendar: {e}")
-        return pd.DataFrame()
+        return (None, []) if restituisci_eventi else pd.DataFrame()

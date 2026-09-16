@@ -247,3 +247,84 @@ def svuota_articoli_ignorati_prev_cloud():
     except Exception as e:
         st.error(f"Errore nel ripristino totale del previsionale: {e}")
         return False
+
+
+# ---------------------------------------------------------
+# EVENTI GOOGLE CALENDAR GESTITI (STEP 8C)
+# La tabella calendar_eventi_gestiti va creata con lo script SQL nel pacchetto.
+# Le letture avvengono SOLO durante la scansione manuale.
+# ---------------------------------------------------------
+def carica_decisioni_eventi_calendar_cloud():
+    """Restituisce {(calendar_id, event_id): record}; None se DB non pronto."""
+    if supabase is None:
+        st.error("Supabase non disponibile: gestione eventi Calendar disabilitata.")
+        return None
+    try:
+        dati = []
+        inizio = 0
+        step = 1000
+        while True:
+            res = (supabase.table("calendar_eventi_gestiti")
+                   .select("calendar_id,event_id,stato,cliente,data_evento")
+                   .order("calendar_id").order("event_id")
+                   .range(inizio, inizio + step - 1).execute())
+            batch = res.data or []
+            dati.extend(batch)
+            if len(batch) < step:
+                break
+            inizio += step
+        return {
+            (str(r["calendar_id"]), str(r["event_id"])): r
+            for r in dati
+        }
+    except Exception as e:
+        st.error(
+            "Impossibile leggere gli eventi gestiti da Supabase. "
+            "Verifica di aver eseguito lo script SQL dello Step 8C. "
+            f"Dettagli: {e}"
+        )
+        return None
+
+
+def salva_decisione_evento_calendar_cloud(evento, stato, cliente=None):
+    """Salva la decisione solo per la specifica occorrenza Calendar."""
+    if supabase is None:
+        return False
+    if stato not in {"ignorato", "associato"}:
+        st.error("Stato evento non valido.")
+        return False
+    cliente = str(cliente).strip() if cliente is not None else None
+    if stato == "associato" and not cliente:
+        st.warning("Seleziona il cliente da associare.")
+        return False
+    payload = {
+        "calendar_id": str(evento["calendar_id"]),
+        "event_id": str(evento["event_id"]),
+        "data_evento": str(evento["data_evento"]),
+        "stato": stato,
+        "cliente": cliente if stato == "associato" else None,
+    }
+    try:
+        supabase.table("calendar_eventi_gestiti").upsert(
+            payload, on_conflict="calendar_id,event_id"
+        ).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nel salvataggio della decisione Calendar: {e}")
+        return False
+
+
+def ripristina_evento_ignorato_calendar_cloud(evento):
+    """Rimuove solo una decisione 'ignorato', non le associazioni."""
+    if supabase is None:
+        return False
+    try:
+        (supabase.table("calendar_eventi_gestiti").delete()
+         .eq("calendar_id", str(evento["calendar_id"]))
+         .eq("event_id", str(evento["event_id"]))
+         .eq("stato", "ignorato")
+         .execute())
+        return True
+    except Exception as e:
+        st.error(f"Errore nel ripristino dell'evento: {e}")
+        return False

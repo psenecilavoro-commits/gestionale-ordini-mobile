@@ -3,6 +3,7 @@ import pandas as pd
 import re
 import inspect
 import importlib
+import hashlib
 import time
 from rapidfuzz import process, fuzz
 
@@ -72,9 +73,15 @@ from database import (
     aggiungi_articoli_ignorati_prev_cloud,
     rimuovi_articolo_ignorato_prev_cloud,
     svuota_articoli_ignorati_prev_cloud,
+    carica_decisioni_eventi_calendar_cloud,
+    salva_decisione_evento_calendar_cloud,
+    ripristina_evento_ignorato_calendar_cloud,
 )
 
-from calendar_service import ottieni_visite_calendar
+from calendar_service import (
+    ottieni_visite_calendar, elabora_eventi_calendar, CALENDAR_TIMEZONE
+)
+from datetime import datetime
 
 # ---------------------------------------------------------
 # DIAGNOSTICA PRESTAZIONI 5F
@@ -1139,9 +1146,53 @@ if not tabs_lazy_supportate or getattr(tab_visite, "open", False):
             if btn_scan_cal:
                 _t_calendar = time.perf_counter()
                 with st.spinner("Scansione di Google Calendar in corso..."):
-                    df_vis_res = ottieni_visite_calendar(list_cli_db, st.session_state.mappa_custom_calendar)
-                    st.session_state.df_visite_cache = df_vis_res
+                    decisioni = carica_decisioni_eventi_calendar_cloud()
+                    # Se la tabella manca, le visite continuano a funzionare,
+                    # ma ignorare/associare e' disabilitato per evitare false conferme.
+                    decisioni_ok = decisioni is not None
+                    if not decisioni_ok:
+                        decisioni = {}
+                    df_vis_res, eventi_raw = ottieni_visite_calendar(
+                        list_cli_db_tutti,
+                        st.session_state.mappa_custom_calendar,
+                        restituisci_eventi=True,
+                        decisioni_eventi=decisioni,
+                        clienti_da_monitorare=list_cli_db,
+                    )
+                    if df_vis_res is not None:
+                        st.session_state.calendar_eventi_raw = eventi_raw
+                        st.session_state.calendar_decisioni = decisioni
+                        st.session_state.calendar_decisioni_ok = decisioni_ok
+                        st.session_state.calendar_elaborazione_key = None
                 registra_tempo("Calendar · scansione completa", _t_calendar)
+
+            # Rielabora gli eventi in memoria soltanto quando cambiano mappa,
+            # esclusioni, decisioni o giorno; mai con una nuova scansione API.
+            if "calendar_eventi_raw" in st.session_state:
+                oggi_calendar = datetime.now(CALENDAR_TIMEZONE).date()
+                decisioni_cache = st.session_state.get("calendar_decisioni", {})
+                firma_elaborazione = (
+                    oggi_calendar.isoformat(),
+                    tuple(list_cli_db),
+                    tuple(sorted(st.session_state.mappa_custom_calendar.items())),
+                    tuple(sorted((k[0], k[1], str(v.get("stato")), str(v.get("cliente")))
+                                 for k, v in decisioni_cache.items())),
+                )
+                if (st.session_state.get("calendar_elaborazione_key") != firma_elaborazione
+                        or "df_visite_cache" not in st.session_state
+                        or st.session_state.df_visite_cache.empty):
+                    df_ricalcolato, da_verificare, ignorati = elabora_eventi_calendar(
+                        st.session_state.calendar_eventi_raw,
+                        list_cli_db_tutti,
+                        st.session_state.mappa_custom_calendar,
+                        decisioni_eventi=decisioni_cache,
+                        clienti_da_monitorare=list_cli_db,
+                        oggi=oggi_calendar,
+                    )
+                    st.session_state.df_visite_cache = df_ricalcolato
+                    st.session_state.calendar_da_verificare = da_verificare
+                    st.session_state.calendar_ignorati = ignorati
+                    st.session_state.calendar_elaborazione_key = firma_elaborazione
 
             df_vis_display = st.session_state.get("df_visite_cache", pd.DataFrame())
 
@@ -1233,6 +1284,159 @@ if not tabs_lazy_supportate or getattr(tab_visite, "open", False):
                                 st.session_state.df_visite_cache = pd.DataFrame()
                                 st.success("Tutti i clienti sono stati ripristinati con successo!")
                                 st.rerun()
+
+                # STEP 8C: anomalie Calendar, solo eventi di oggi o futuri.
+                # Non richiede ulteriori chiamate a Google Calendar.
+                eventi_da_verificare = st.session_state.get("calendar_da_verificare", [])
+                eventi_ignorati = st.session_state.get("calendar_ignorati", [])
+                decisioni_ok = st.session_state.get("calendar_decisioni_ok", False)
+
+                if "calendar_eventi_raw" in st.session_state:
+                    st.divider()
+                    st.subheader("📌 Eventi Calendar da verificare")
+                    st.caption(
+                        "Solo appuntamenti di oggi o futuri che non hanno un abbinamento sicuro. "
+                        "Gli eventi passati non compaiono qui. "
+                        "Le scelte non modificano Google Calendar."
+                    )
+                    if not decisioni_ok:
+                        st.warning(
+                            "La tabella Supabase dello Step 8C non è disponibile: "
+                            "puoi continuare a consultare le visite, ma le azioni "
+                            "Associa e Ignora sono disabilitate."
+                        )
+
+                    with st.expander(
+                        f"📌 Da verificare ({len(eventi_da_verificare)})",
+                        expanded=bool(eventi_da_verificare)
+                    ):
+                        if eventi_da_verificare:
+                            st.caption("Seleziona l'evento e scegli che cosa farne.")
+                            lookup_eventi = {
+                                (e["calendar_id"], e["event_id"]): e
+                                for e in eventi_da_verificare
+                            }
+                            scelta_evento = st.selectbox(
+                                "Evento da verificare:",
+                                list(lookup_eventi),
+                                format_func=lambda chiave: (
+                                    f"{lookup_eventi[chiave]['data_evento'][8:10]}/"
+                                    f"{lookup_eventi[chiave]['data_evento'][5:7]}/"
+                                    f"{lookup_eventi[chiave]['data_evento'][:4]} · "
+                                    f"{lookup_eventi[chiave]['titolo']}"
+                                ),
+                                key="cal_evento_da_verificare",
+                            )
+                            evento_scelto = lookup_eventi[scelta_evento]
+                            st.caption(evento_scelto.get(
+                                "motivo", "Nessun abbinamento automatico sicuro"
+                            ))
+                            cli_evento = st.selectbox(
+                                "Cliente da associare:",
+                                ["-- Seleziona cliente --"] + list_cli_db_tutti,
+                                key="cal_cliente_da_associare",
+                            )
+                            b_associa, b_ignora = st.columns(2)
+                            if b_associa.button(
+                                "🔗 Associa solo questo evento",
+                                disabled=not decisioni_ok,
+                                key="cal_associa_singolo",
+                            ):
+                                if cli_evento == "-- Seleziona cliente --":
+                                    st.warning("Seleziona prima il cliente corretto.")
+                                elif salva_decisione_evento_calendar_cloud(
+                                    evento_scelto, "associato", cli_evento
+                                ):
+                                    st.session_state.calendar_decisioni[scelta_evento] = {
+                                        "stato": "associato", "cliente": cli_evento
+                                    }
+                                    st.success("Evento associato solo a questo cliente.")
+                                    st.rerun()
+
+                            if b_ignora.button(
+                                "🚫 Ignora questo evento",
+                                disabled=not decisioni_ok,
+                                key="cal_ignora_evento",
+                            ):
+                                if salva_decisione_evento_calendar_cloud(
+                                    evento_scelto, "ignorato"
+                                ):
+                                    st.session_state.calendar_decisioni[scelta_evento] = {
+                                        "stato": "ignorato", "cliente": None
+                                    }
+                                    st.success("Evento spostato nella sezione Ignorati.")
+                                    st.rerun()
+
+                            if st.checkbox(
+                                "➕ Crea una regola per titoli simili",
+                                key="cal_mostra_regola_simile",
+                            ):
+                                st.caption(
+                                    "Una regola può valere per più appuntamenti: "
+                                    "scegli una parola chiave abbastanza specifica."
+                                )
+                                chiave_kw = hashlib.sha256(
+                                    (scelta_evento[0] + scelta_evento[1]).encode("utf-8")
+                                ).hexdigest()[:16]
+                                parola_regola = st.text_input(
+                                    "Parola chiave (precompilata con il titolo completo):",
+                                    value=evento_scelto["titolo"],
+                                    key=f"cal_regola_kw_{chiave_kw}",
+                                )
+                                if st.button(
+                                    "💾 Salva regola per eventi simili",
+                                    disabled=not decisioni_ok,
+                                    key="cal_salva_regola_evento",
+                                ):
+                                    keyword = parola_regola.strip()
+                                    if cli_evento == "-- Seleziona cliente --":
+                                        st.warning("Seleziona prima il cliente corretto.")
+                                    elif len(keyword) < 3:
+                                        st.warning("La parola chiave deve avere almeno 3 caratteri.")
+                                    elif keyword.casefold() not in evento_scelto["titolo"].casefold():
+                                        st.warning("La parola chiave deve comparire nel titolo dell'evento.")
+                                    elif aggiungi_mappatura_calendar_cloud(keyword, cli_evento):
+                                        st.session_state.mappa_custom_calendar = carica_mappatura_calendar_cloud()
+                                        st.success("Regola salvata; gli eventi in memoria saranno rielaborati.")
+                                        st.rerun()
+                        else:
+                            st.success("Nessun evento da verificare nella scansione disponibile.")
+
+                    with st.expander(f"👁️ Eventi ignorati ({len(eventi_ignorati)})"):
+                        st.caption(
+                            "Recuperabili fino al giorno dell'appuntamento compreso. "
+                            "Dal giorno successivo scompaiono automaticamente "
+                            "dall'elenco, senza essere cancellati da Google Calendar."
+                        )
+                        if eventi_ignorati:
+                            lookup_ignorati = {
+                                (e["calendar_id"], e["event_id"]): e
+                                for e in eventi_ignorati
+                            }
+                            scelta_ignorato = st.selectbox(
+                                "Evento ignorato da recuperare:",
+                                list(lookup_ignorati),
+                                format_func=lambda chiave: (
+                                    f"{lookup_ignorati[chiave]['data_evento'][8:10]}/"
+                                    f"{lookup_ignorati[chiave]['data_evento'][5:7]}/"
+                                    f"{lookup_ignorati[chiave]['data_evento'][:4]} · "
+                                    f"{lookup_ignorati[chiave]['titolo']}"
+                                ),
+                                key="cal_evento_ignorato",
+                            )
+                            if st.button(
+                                "↩️ Ripristina evento",
+                                disabled=not decisioni_ok,
+                                key="cal_ripristina_ignorato",
+                            ):
+                                if ripristina_evento_ignorato_calendar_cloud(
+                                    lookup_ignorati[scelta_ignorato]
+                                ):
+                                    st.session_state.calendar_decisioni.pop(scelta_ignorato, None)
+                                    st.success("Evento ripristinato.")
+                                    st.rerun()
+                        else:
+                            st.info("Nessun evento ignorato ancora recuperabile.")
 
                 with st.expander("🔗 Mappatura Manuale / Sinonimi Titoli Calendar"):
                     st.caption("Se su Google Calendar scrivi nomi abbreviati (es. 'MARTIGNONI' invece del nome completo), puoi associare qui la parola chiave alla ragione sociale esatta.")
