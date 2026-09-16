@@ -153,77 +153,6 @@ def calcola_previsionale_cached(df_ordini, giorno_cache, versione_cache):
 
 
 # ---------------------------------------------------------
-# STEP 8A: PANORAMICA OPERATIVA (SOLO LETTURA, NESSUNA NUOVA QUERY)
-# ---------------------------------------------------------
-def prepara_panoramica_ordini(df_ordini, oggi=None):
-    """Riepilogo delle righe del DB, non conteggio di ordini univoci.
-
-    Le date non valide restano nel totale delle righe, ma non nei conteggi
-    temporali. Data locale italiana, con possibilità di fissarla nei test.
-    """
-    if oggi is None:
-        oggi = pd.Timestamp.now(tz="Europe/Rome").date()
-
-    mesi = pd.period_range(start=pd.Period(oggi, freq="M"), periods=6, freq="M")
-    conteggi_mensili = pd.DataFrame(
-        {"Righe con consegna": [0] * len(mesi)},
-        index=[str(mese) for mese in mesi],
-    )
-    colonne_dettaglio = ["CONSEGNA", "CLIENTE", "N. ORDINE", "ARTICOLO", "QUANTITÀ"]
-    prossime_vuote = pd.DataFrame(columns=colonne_dettaglio)
-
-    if df_ordini.empty:
-        return {
-            "righe": 0,
-            "clienti": 0,
-            "articoli": 0,
-            "entro_30_gg": 0,
-            "date_non_valide": 0,
-            "mensile": conteggi_mensili,
-            "prossime": prossime_vuote,
-            "prossime_totali": 0,
-        }
-
-    df = df_ordini.copy()
-    df["_data_consegna"] = pd.to_datetime(
-        df["CONSEGNA"], format="%d/%m/%Y", errors="coerce"
-    )
-    oggi_ts = pd.Timestamp(oggi)
-    fine_30_ts = oggi_ts + pd.Timedelta(days=30)
-    date_valide = df["_data_consegna"].notna()
-
-    # Consegne già in database: non sono una previsione di nuove vendite.
-    df_future = df[date_valide & (df["_data_consegna"] >= oggi_ts)]
-    df_prossime = df_future[df_future["_data_consegna"] <= fine_30_ts]
-    mensili = (
-        df_future["_data_consegna"]
-        .dt.to_period("M")
-        .value_counts()
-        .reindex(mesi, fill_value=0)
-        .sort_index()
-    )
-    conteggi_mensili["Righe con consegna"] = mensili.to_numpy(dtype=int)
-
-    dettaglio = (
-        df_prossime.sort_values(["_data_consegna", "CLIENTE", "ARTICOLO"], kind="stable")
-        [colonne_dettaglio]
-        .head(12)
-        .reset_index(drop=True)
-    )
-
-    return {
-        "righe": len(df),
-        "clienti": df["CLIENTE"].loc[df["CLIENTE"].astype(str).str.strip().ne("")].nunique(),
-        "articoli": df["ARTICOLO"].loc[df["ARTICOLO"].astype(str).str.strip().ne("")].nunique(),
-        "entro_30_gg": len(df_prossime),
-        "date_non_valide": int((~date_valide).sum()),
-        "mensile": conteggi_mensili,
-        "prossime": dettaglio,
-        "prossime_totali": len(df_prossime),
-    }
-
-
-# ---------------------------------------------------------
 # INTERFACCIA STREAMLIT A TABS (6 SCHEDE)
 # ---------------------------------------------------------
 col_h1, col_h2 = st.columns([5, 1])
@@ -671,53 +600,15 @@ if not tabs_lazy_supportate or getattr(tab_database, "open", False):
         else:
             st.info("Nessun ordine presente nel database Cloud. Carica dei PDF per iniziare.")
 # =========================================================
-# SCHEDA 2: PANORAMICA OPERATIVA + ANALISI PREZZO
+# SCHEDA 2: ANALISI PREZZO NEL TEMPO
 # =========================================================
 if not tabs_lazy_supportate or getattr(tab_grafici, "open", False):
     with tab_grafici:
-        st.subheader("📊 Panoramica operativa")
+        st.subheader("📊 Andamento Prezzo per Articolo (Mese/Anno)")
+        
         df_chart = st.session_state.db_ordini.copy()
-
+        
         if not df_chart.empty:
-            # Calcoli locali sui dati già presenti in sessione, senza API extra.
-            panoramica = prepara_panoramica_ordini(df_chart)
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Righe ordini in database", panoramica["righe"])
-            k2.metric("Clienti distinti", panoramica["clienti"])
-            k3.metric("Articoli distinti", panoramica["articoli"])
-            k4.metric("Righe con consegna entro 30 gg", panoramica["entro_30_gg"])
-
-            st.caption(
-                "Conteggi per **riga ordine**, non per ordine univoco. "
-                "Le date sono quelle di consegna già registrate nel database; "
-                "non sono previsioni di riordino."
-            )
-            if panoramica["date_non_valide"]:
-                st.warning(
-                    f"⚠️ {panoramica['date_non_valide']} righe senza una data di consegna valida: "
-                    "incluse nel totale, escluse dai conteggi per data."
-                )
-
-            st.markdown("**📅 Consegne registrate nei prossimi 6 mesi**")
-            st.bar_chart(panoramica["mensile"], height=235)
-
-            st.markdown("**🚚 Prossime consegne registrate (entro 30 giorni)**")
-            if panoramica["prossime_totali"]:
-                st.dataframe(
-                    panoramica["prossime"],
-                    use_container_width=True,
-                    hide_index=True,
-                )
-                if panoramica["prossime_totali"] > 12:
-                    st.caption(
-                        f"Mostrate le prime 12 righe su {panoramica['prossime_totali']} "
-                        "con consegna entro 30 giorni."
-                    )
-            else:
-                st.info("Nessuna riga con consegna registrata nei prossimi 30 giorni.")
-
-            st.divider()
-            st.subheader("📈 Andamento prezzo per articolo (mese/anno)")
             col_f1, col_f2 = st.columns(2)
             
             clienti_g = sorted([str(x) for x in df_chart["CLIENTE"].unique() if str(x).strip()])
