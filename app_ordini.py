@@ -964,14 +964,22 @@ if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
                         df_prev_disp["PRIORITÀ SOLLECITO"] == sel_priorita
                     ]
 
-                # 8B: ordinamento esclusivamente VISIVO, dopo tutti i filtri.
-                # Manteniamo l'ordine preesistente per le righe non in ritardo
-                # e, a parità di priorità/giorni, anche per quelle in ritardo.
-                if "PRIORITÀ SOLLECITO" in df_prev_disp.columns and "RITARDO STIMATO (GG)" in df_prev_disp.columns:
+                # 8B1: ordinamento VISIVO: priorità > affidabilità > ritardo.
+                # La graduazione dell'affidabilità vale per le sole righe con priorità:
+                # le altre mantengono il loro ordine originale (come nella 8B).
+                colonne_ordine_8b1 = {
+                    "PRIORITÀ SOLLECITO", "AFFIDABILITÀ", "RITARDO STIMATO (GG)"
+                }
+                if colonne_ordine_8b1.issubset(df_prev_disp.columns):
                     ordine_priorita = {
                         "🔴 Alta": 0,
                         "🟠 Media": 1,
                         "⚪ Da verificare": 2,
+                    }
+                    ordine_affidabilita = {
+                        "🟢 Alta": 0,
+                        "🟡 Media": 1,
+                        "🔴 Bassa": 2,
                     }
                     df_prev_disp = df_prev_disp.copy()
                     df_prev_disp["_ordine_priorita_ui"] = (
@@ -980,6 +988,17 @@ if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
                         .fillna(3)
                         .astype(int)
                     )
+                    df_prev_disp["_ordine_affidabilita_ui"] = (
+                        df_prev_disp["AFFIDABILITÀ"]
+                        .map(ordine_affidabilita)
+                        .fillna(3)
+                        .astype(int)
+                    )
+                    # Fuori dai solleciti non applichiamo un nuovo riordino.
+                    df_prev_disp.loc[
+                        df_prev_disp["_ordine_priorita_ui"] == 3,
+                        "_ordine_affidabilita_ui"
+                    ] = 3
                     df_prev_disp["_ritardo_ui"] = (
                         pd.to_numeric(
                             df_prev_disp["RITARDO STIMATO (GG)"],
@@ -990,13 +1009,32 @@ if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
                     df_prev_disp = (
                         df_prev_disp
                         .sort_values(
-                            by=["_ordine_priorita_ui", "_ritardo_ui"],
-                            ascending=[True, False],
+                            by=[
+                                "_ordine_priorita_ui",
+                                "_ordine_affidabilita_ui",
+                                "_ritardo_ui",
+                            ],
+                            ascending=[True, True, False],
                             kind="mergesort",
                         )
-                        .drop(columns=["_ordine_priorita_ui", "_ritardo_ui"])
+                        .drop(
+                            columns=[
+                                "_ordine_priorita_ui",
+                                "_ordine_affidabilita_ui",
+                                "_ritardo_ui",
+                            ]
+                        )
                         .reset_index(drop=True)
                     )
+
+                # AFFIDABILITÀ già esisteva: la portiamo vicino alla PRIORITÀ
+                # per leggere i due indicatori senza scorrere la tabella.
+                if {"PRIORITÀ SOLLECITO", "AFFIDABILITÀ"}.issubset(df_prev_disp.columns):
+                    colonne_visibili = list(df_prev_disp.columns)
+                    colonne_visibili.remove("AFFIDABILITÀ")
+                    posizione_priorita = colonne_visibili.index("PRIORITÀ SOLLECITO")
+                    colonne_visibili.insert(posizione_priorita + 1, "AFFIDABILITÀ")
+                    df_prev_disp = df_prev_disp.loc[:, colonne_visibili]
 
                 st.caption(f"Righe trovate: **{len(df_prev_disp)}**")
                 st.caption(
@@ -1004,7 +1042,8 @@ if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
                     "🟠 Media = affidabilità Media con <30 gg di ritardo · "
                     "⚪ Da verificare = affidabilità Bassa · "
                     "**RITARDO STIMATO (GG)** = giorni trascorsi dalla STIMA DA STORICO. "
-                    "La priorità non modifica la previsione."
+                    "Ordine tabella: priorità, poi affidabilità (Alta → Media → Bassa), "
+                    "poi giorni di ritardo. La priorità non modifica la previsione."
                 )
 
                 df_prev_edit = df_prev_disp.copy()
