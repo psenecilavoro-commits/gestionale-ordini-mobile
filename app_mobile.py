@@ -5,7 +5,26 @@ import streamlit as st
 from supabase import Client, create_client
 
 
-st.set_page_config(page_title="Ordini Mobile", layout="wide")
+st.set_page_config(
+    page_title="Ordini Mobile",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+# L'app mobile non usa una barra laterale: nascondiamola anche quando
+# il browser cambia orientamento o ricorda uno stato precedente.
+st.markdown(
+    """
+    <style>
+    section[data-testid="stSidebar"],
+    [data-testid="stSidebarCollapsedControl"],
+    [data-testid="stSidebarCollapseButton"] {
+        display: none !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 # ---------------------------------------------------------
 # ACCESSO CON PASSWORD (PRIMA DI LEGGERE I DATI)
@@ -36,11 +55,6 @@ def verifica_password():
 
 
 verifica_password()
-
-if st.sidebar.button("🔒 Disconnetti"):
-    st.session_state.autenticato_mobile = False
-    st.session_state.pop("db_ordini", None)
-    st.rerun()
 
 # ---------------------------------------------------------
 # CONNESSIONE SUPABASE: CREDENZIALI SOLO NEI SECRETS
@@ -107,6 +121,12 @@ def carica_db_cloud():
 # INTERFACCIA MOBILE (CONSULTAZIONE E COMPARATIVA)
 # ---------------------------------------------------------
 st.title("📱 Consulta & Compara Ordini")
+
+# Il comando di uscita resta accessibile senza occupare metà schermo.
+if st.button("🔒 Disconnetti", key="mobile_logout"):
+    st.session_state.autenticato_mobile = False
+    st.session_state.pop("db_ordini", None)
+    st.rerun()
 
 if "db_ordini" not in st.session_state:
     dati = carica_db_cloud()
