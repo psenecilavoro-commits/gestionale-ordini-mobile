@@ -21,7 +21,31 @@ if getattr(previsionale_module, "VERSIONE_PREVISIONALE", None) != VERSIONE_MODUL
 
 calcola_previsionale = previsionale_module.calcola_previsionale
 
-st.set_page_config(page_title="Gestionale Ordini Cloud", layout="wide")
+st.set_page_config(page_title="Gestionale ordini", layout="wide")
+
+# Pulsanti primari: azzurro chiaro al posto del tema rosso.
+# Solo stile visivo; nessun cambiamento ai click o alle operazioni.
+st.markdown("""
+<style>
+button[kind="primary"],
+button[data-testid="stBaseButton-primary"] {
+    background-color: #DCEEFF !important;
+    color: #183B58 !important;
+    border: 1px solid #9FC8EC !important;
+}
+button[kind="primary"]:hover,
+button[data-testid="stBaseButton-primary"]:hover {
+    background-color: #C5E4FC !important;
+    color: #12324C !important;
+    border-color: #74B3E5 !important;
+}
+button[kind="primary"]:focus-visible,
+button[data-testid="stBaseButton-primary"]:focus-visible {
+    outline: 2px solid #357FB7 !important;
+    outline-offset: 2px;
+}
+</style>
+""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # SISTEMA DI AUTENTICAZIONE PASSWORD
@@ -34,7 +58,7 @@ def verifica_password():
 
     if not st.session_state.autenticato:
         st.title("🔒 Accesso Riservato")
-        st.subheader("Gestionale Ordini & Monitoraggio Visite")
+        st.subheader("Gestionale ordini")
         
         pwd_input = st.text_input("Inserisci la password di accesso:", type="password", key="login_pwd_input")
         btn_login = st.button("Accedi", type="primary")
@@ -160,11 +184,11 @@ def calcola_previsionale_cached(df_ordini, giorno_cache, versione_cache):
 
 
 # ---------------------------------------------------------
-# INTERFACCIA STREAMLIT A TABS (6 SCHEDE)
+# INTERFACCIA STREAMLIT A TABS (5 SCHEDE)
 # ---------------------------------------------------------
 col_h1, col_h2 = st.columns([5, 1])
 with col_h1:
-    st.title("📦 Gestionale Ordini PDF (Cloud Supabase)")
+    st.title("Gestionale ordini")
 with col_h2:
     st.write("")
     if st.button("🔒 Disconnetti"):
@@ -212,12 +236,11 @@ if "mappa_custom_calendar" not in st.session_state:
     registra_tempo("Supabase · mappatura Calendar", _t_perf)
 
 etichette_tabs = [
-    "📋 Database Ordini",
-    "📈 Analisi & Grafici",
-    "🏷️ Normalizzazione Cliente",
-    "🤖 Pulizia Smart (Fuzzy)",
-    "🔮 Previsionale Riordini",
-    "📅 Monitoraggio Visite",
+    "Database",
+    "Analisi",
+    "Gestione anomalie",
+    "Previsionale",
+    "Monitoraggio",
 ]
 
 try:
@@ -229,8 +252,7 @@ if tabs_lazy_supportate:
     (
         tab_database,
         tab_grafici,
-        tab_norm_cli,
-        tab_fuzzy,
+        tab_anomalie,
         tab_previsionale,
         tab_visite,
     ) = st.tabs(
@@ -243,8 +265,7 @@ else:
     (
         tab_database,
         tab_grafici,
-        tab_norm_cli,
-        tab_fuzzy,
+        tab_anomalie,
         tab_previsionale,
         tab_visite,
     ) = st.tabs(etichette_tabs)
@@ -661,10 +682,10 @@ if not tabs_lazy_supportate or getattr(tab_grafici, "open", False):
         else:
             st.info("Carica dei file PDF nella prima scheda per generare i grafici.")
 # =========================================================
-# SCHEDA 3: NORMALIZZAZIONE VELOCE PER CLIENTE
+# SCHEDA 3: GESTIONE ANOMALIE — NORMALIZZAZIONE CLIENTE
 # =========================================================
-if not tabs_lazy_supportate or getattr(tab_norm_cli, "open", False):
-    with tab_norm_cli:
+if not tabs_lazy_supportate or getattr(tab_anomalie, "open", False):
+    with tab_anomalie:
         st.subheader("🏷️ Normalizzazione Veloce Articoli per Cliente")
         st.markdown("Seleziona un cliente per visualizzare l'elenco dei suoi articoli in database, vedere quante volte compaiono e unificare le varianti obsolete in un solo clic.")
 
@@ -713,10 +734,11 @@ if not tabs_lazy_supportate or getattr(tab_norm_cli, "open", False):
         else:
             st.warning("Database vuoto o in fase di caricamento.")
 # =========================================================
-# SCHEDA 4: PULIZIA SMART (FUZZY MATCHING CON PERSISTENZA CLOUD)
+# SCHEDA 3: GESTIONE ANOMALIE — PULIZIA SMART (FUZZY)
 # =========================================================
-if not tabs_lazy_supportate or getattr(tab_fuzzy, "open", False):
-    with tab_fuzzy:
+if not tabs_lazy_supportate or getattr(tab_anomalie, "open", False):
+    with tab_anomalie:
+        st.divider()
         st.subheader("🤖 Rilevamento Automatico Duplicati e Varianti")
         st.markdown("Questa funzione confronta gli articoli in database e trova le varianti quasi identiche per unificarle con un clic.")
 
@@ -835,7 +857,7 @@ if not tabs_lazy_supportate or getattr(tab_fuzzy, "open", False):
         else:
             st.warning("Database vuoto.")
 # =========================================================
-# SCHEDA 5: PREVISIONALE RIORDINI
+# SCHEDA 4: PREVISIONALE RIORDINI
 # =========================================================
 if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
     with tab_previsionale:
@@ -1119,7 +1141,7 @@ if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
         else:
             st.warning("Database vuoto. Carica dei PDF per generare il previsionale.")
 # =========================================================
-# SCHEDA 6: MONITORAGGIO VISITE GOOGLE CALENDAR
+# SCHEDA 5: MONITORAGGIO VISITE GOOGLE CALENDAR
 # =========================================================
 if not tabs_lazy_supportate or getattr(tab_visite, "open", False):
     with tab_visite:
@@ -1227,10 +1249,25 @@ if not tabs_lazy_supportate or getattr(tab_visite, "open", False):
                 df_vis_edit = df_vis_filt.copy()
                 df_vis_edit.insert(0, "Seleziona", st.session_state.select_all_visite_state)
 
+                st.caption(
+                    "**Visite ultimi 365 giorni:** appuntamenti conclusi e abbinati al cliente "
+                    "nel periodo di 365 giorni di calendario (oggi incluso). "
+                    "Non conta visite future, eventi ignorati o appuntamenti non abbinati. "
+                    "Per aggiornare i dati, usa «Scansiona Google Calendar»."
+                )
                 edited_vis_df = st.data_editor(
                     df_vis_edit,
                     use_container_width=True,
-                    num_rows="dynamic",
+                    hide_index=True,
+                    num_rows="fixed",
+                    disabled=[col for col in df_vis_edit.columns if col != "Seleziona"],
+                    column_config={
+                        "VISITE ULTIMI 365 GG": st.column_config.NumberColumn(
+                            "Visite ultimi 365 giorni",
+                            help="Appuntamenti conclusi negli ultimi 365 giorni di calendario, oggi incluso.",
+                            format="%d",
+                        ),
+                    },
                     key="editor_visite"
                 )
 

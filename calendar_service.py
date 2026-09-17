@@ -378,6 +378,9 @@ def elabora_eventi_calendar(
     }
     visite_passate = {}
     visite_future = {}
+    # Conteggio per appuntamenti distinti, non per righe di calendario.
+    visite_anno = {cliente: set() for cliente in clienti_da_monitorare}
+    primo_giorno = oggi - timedelta(days=364)
     da_verificare = []
     ignorati = []
 
@@ -409,6 +412,16 @@ def elabora_eventi_calendar(
             if cliente_abbinato not in clienti_monitorati:
                 # I clienti esclusi dal monitoraggio non sono anomalie.
                 continue
+            # Giorni di calendario: 365 date, dal giorno oggi-364 a oggi.
+            # Un appuntamento di oggi conta solo quando risulta concluso;
+            # quelli dei giorni precedenti sono gia' trascorsi.
+            if (primo_giorno <= data_evento <= oggi
+                    and evento.get("terminato", data_evento < oggi)):
+                identita = evento.get("identita_visita") or (
+                    evento.get("calendar_id", ""), evento.get("event_id", "")
+                )
+                visite_anno[cliente_abbinato].add(identita)
+
             if data_evento >= oggi:
                 if (cliente_abbinato not in visite_future
                         or data_evento < visite_future[cliente_abbinato]):
@@ -451,6 +464,7 @@ def elabora_eventi_calendar(
             stato_visita = "⚪ Nessuna Visita a Calendario"
         risultati.append({
             "CLIENTE": cliente,
+            "VISITE ULTIMI 365 GG": len(visite_anno[cliente]),
             "DATA ULTIMA VISITA": str_visita,
             "GG DALL'ULTIMA VISITA": str_gg,
             "STATO VISITA": stato_visita,
@@ -497,8 +511,14 @@ def ottieni_visite_calendar(
         ora_locale = datetime.now(CALENDAR_TIMEZONE)
         oggi = ora_locale.date()
 
+        # Intervallo esatto di 365 giorni di calendario, oggi compreso.
+        # La mezzanotte locale evita di perdere le visite del primo giorno.
         time_min = _to_rfc3339_utc(
-            ora_locale - timedelta(days=365)
+            datetime.combine(
+                oggi - timedelta(days=364),
+                datetime.min.time(),
+                tzinfo=CALENDAR_TIMEZONE,
+            )
         )
         time_max = _to_rfc3339_utc(
             ora_locale + timedelta(days=90)
@@ -522,6 +542,8 @@ def ottieni_visite_calendar(
 
             calendari_letti += 1
             for event in events:
+                if event.get("status") == "cancelled":
+                    continue
                 summary = event.get('summary', '')
                 if not summary:
                     continue
@@ -545,11 +567,49 @@ def ottieni_visite_calendar(
                     event_id = "fallback_" + hashlib.sha256(
                         identita.encode("utf-8")
                     ).hexdigest()
+                # Una visita di oggi conta solo dopo l'ora di fine.
+                # Gli eventi tutto-il-giorno contano dal giorno seguente.
+                fine = event.get("end") or {}
+                terminato = data_evento < oggi if not fine else False
+                if fine.get("dateTime"):
+                    try:
+                        fine_dt = datetime.fromisoformat(
+                            fine["dateTime"].replace("Z", "+00:00")
+                        )
+                        if fine_dt.tzinfo is None:
+                            fine_dt = fine_dt.replace(tzinfo=CALENDAR_TIMEZONE)
+                        terminato = fine_dt <= ora_locale
+                    except (TypeError, ValueError):
+                        pass
+                elif fine.get("date"):
+                    try:
+                        # Google Calendar usa date di fine esclusive.
+                        terminato = date.fromisoformat(fine["date"]) <= oggi
+                    except (TypeError, ValueError):
+                        pass
+
+                # Evita di conteggiare due volte lo stesso evento condiviso
+                # tra calendari; mantiene distinte le occorrenze ricorrenti.
+                uid = event.get("iCalUID")
+                inizio_originale = event.get("start", {})
+                if uid:
+                    identita_visita = hashlib.sha256(
+                        (str(uid) + "|" + str(
+                            inizio_originale.get("dateTime") or inizio_originale.get("date") or ""
+                        )).encode("utf-8")
+                    ).hexdigest()
+                else:
+                    identita_visita = hashlib.sha256(
+                        (str(cal_id) + "|" + str(event_id)).encode("utf-8")
+                    ).hexdigest()
+
                 eventi_minimi.append({
                     "calendar_id": str(cal_id),
                     "event_id": str(event_id),
                     "titolo": summary,
                     "data_evento": data_evento.isoformat(),
+                    "terminato": terminato,
+                    "identita_visita": identita_visita,
                 })
 
         if calendari_letti == 0:
