@@ -102,6 +102,12 @@ from database import (
     ripristina_evento_ignorato_calendar_cloud,
 )
 
+from clienti_monitoraggio import (
+    carica_clienti_monitoraggio,
+    aggiungi_cliente_monitoraggio,
+    rimuovi_cliente_monitoraggio,
+)
+
 from calendar_service import (
     ottieni_visite_calendar, elabora_eventi_calendar, CALENDAR_TIMEZONE
 )
@@ -1146,14 +1152,85 @@ if not tabs_lazy_supportate or getattr(tab_previsionale, "open", False):
 if not tabs_lazy_supportate or getattr(tab_visite, "open", False):
     with tab_visite:
         st.subheader("📅 Monitoraggio Visite Clienti (Google Calendar)")
-        st.markdown("Il sistema scansiona in sola lettura il tuo **Google Calendar**, riconosce i titoli degli eventi associandoli ai clienti del database e calcola da quanti giorni non li visiti.")
+        st.markdown("Il sistema scansiona in sola lettura il tuo **Google Calendar**, riconosce gli eventi associandoli ai clienti del database ordini **o aggiunti manualmente** e calcola da quanti giorni non li visiti.")
 
+        # Elenco separato dagli ordini: si può monitorare un cliente anche
+        # quando nel database non esiste alcuna conferma d'ordine.
         df_vis_base = st.session_state.db_ordini
+        clienti_da_ordini = [
+            str(nome).strip() for nome in df_vis_base["CLIENTE"].dropna().unique()
+            if str(nome).strip()
+        ]
+        clienti_manual = carica_clienti_monitoraggio()
+        clienti_manual_disponibili = clienti_manual is not None
+        if clienti_manual is None:
+            clienti_manual = []
 
-        if not df_vis_base.empty:
-            list_cli_db_tutti = sorted([x for x in df_vis_base["CLIENTE"].unique() if str(x).strip()])
+        with st.expander("➕ Clienti manuali (solo Monitoraggio)"):
+            st.caption(
+                "Aggiungi clienti anche senza ordini: appariranno esclusivamente "
+                "nel Monitoraggio e negli abbinamenti Google Calendar, mai "
+                "in Database, Analisi o Previsionale."
+            )
+            with st.form("form_aggiungi_cliente_monitoraggio", clear_on_submit=True):
+                nome_manuale = st.text_input(
+                    "Ragione sociale del cliente",
+                    max_chars=250,
+                    key="nome_cliente_monitoraggio_manual",
+                )
+                conferma_aggiunta = st.form_submit_button(
+                    "➕ Aggiungi al Monitoraggio",
+                    disabled=not clienti_manual_disponibili,
+                )
+            if conferma_aggiunta:
+                nome_pulito = " ".join(nome_manuale.split())
+                nomi_gia_presenti = {
+                    " ".join(nome.split()).casefold()
+                    for nome in clienti_da_ordini + clienti_manual
+                }
+                if not nome_pulito:
+                    st.warning("Inserisci la ragione sociale del cliente.")
+                elif nome_pulito.casefold() in nomi_gia_presenti:
+                    st.warning("Questo cliente è già presente nel Monitoraggio.")
+                elif aggiungi_cliente_monitoraggio(nome_pulito):
+                    st.session_state.pop("calendar_elaborazione_key", None)
+                    st.session_state.pop("df_visite_cache", None)
+                    st.success("Cliente aggiunto soltanto al Monitoraggio.")
+                    st.rerun()
+
+            if clienti_manual:
+                st.caption(f"Clienti inseriti manualmente: **{len(clienti_manual)}**")
+                col_elenco, col_rimuovi = st.columns([3, 1])
+                cliente_da_rimuovere = col_elenco.selectbox(
+                    "Cliente manuale da rimuovere",
+                    ["-- Seleziona --"] + sorted(clienti_manual),
+                    key="cliente_manual_da_rimuovere",
+                )
+                if col_rimuovi.button(
+                    "🗑️ Rimuovi",
+                    disabled=cliente_da_rimuovere == "-- Seleziona --"
+                             or not clienti_manual_disponibili,
+                    key="btn_rimuovi_cliente_monitoraggio_manual",
+                ):
+                    if rimuovi_cliente_monitoraggio(cliente_da_rimuovere):
+                        st.session_state.pop("calendar_elaborazione_key", None)
+                        st.session_state.pop("df_visite_cache", None)
+                        st.success("Cliente rimosso dal solo elenco manuale. Nessun ordine eliminato.")
+                        st.rerun()
+            elif clienti_manual_disponibili:
+                st.caption("Nessun cliente aggiunto manualmente.")
+
+        # Deduplica anche quando un cliente manuale ottiene in seguito ordini.
+        # La chiave casefold impedisce doppioni per differenze di maiuscole.
+        nomi_monitorati = {}
+        for nome in clienti_da_ordini + clienti_manual:
+            chiave_nome = " ".join(nome.split()).casefold()
+            if chiave_nome and chiave_nome not in nomi_monitorati:
+                nomi_monitorati[chiave_nome] = nome
+        list_cli_db_tutti = sorted(nomi_monitorati.values(), key=str.casefold)
+
+        if list_cli_db_tutti:
             set_cli_ignorati = set(st.session_state.clienti_ignorati_visite_list)
-            
             list_cli_db = [c for c in list_cli_db_tutti if c not in set_cli_ignorati]
 
             col_v1, col_v2 = st.columns([3, 1])
