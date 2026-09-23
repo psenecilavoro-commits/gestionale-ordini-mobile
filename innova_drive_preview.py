@@ -9,6 +9,7 @@ Secrets di Streamlit, non nel repository.
 from __future__ import annotations
 
 from io import BytesIO
+import re
 
 import pdfplumber
 from googleapiclient.http import MediaIoBaseDownload
@@ -25,8 +26,22 @@ class AnteprimaNonDisponibile(RuntimeError):
     """Errore controllato nella sola lettura dei documenti di collaudo."""
 
 
+def _verifica_root_test(drive):
+    root = drive.files().get(
+        fileId=TEST_ROOT_ID, fields="id,name,mimeType,parents", supportsAllDrives=True
+    ).execute()
+    if (
+        root.get("id") != TEST_ROOT_ID
+        or root.get("name") != "TEST BOT CLOUD"
+        or root.get("mimeType") != "application/vnd.google-apps.folder"
+    ):
+        raise AnteprimaNonDisponibile("La cartella radice TEST BOT CLOUD non corrisponde a quella prevista.")
+    return root
+
+
 def _verifica_cartella_test(drive):
     """Impedisce di usare per errore una cartella di produzione."""
+    _verifica_root_test(drive)
     source = drive.files().get(
         fileId=TEST_INBOX_ID, fields="id,name,mimeType,parents",
         supportsAllDrives=True,
@@ -85,6 +100,73 @@ def _leggi_bytes_pdf(drive, file_info):
         raise AnteprimaNonDisponibile("PDF oltre il limite di 15 MB.")
     memoria.seek(0)
     return memoria
+
+
+
+def _lista_figli(drive, parent_id, folders_only=False):
+    query = f"'{parent_id}' in parents and trashed = false"
+    if folders_only:
+        query += " and mimeType = 'application/vnd.google-apps.folder'"
+    items = []
+    token = None
+    while True:
+        resp = drive.files().list(
+            q=query,
+            fields="nextPageToken,files(id,name,mimeType,parents,size,md5Checksum,modifiedTime)",
+            pageSize=1000,
+            pageToken=token,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        ).execute()
+        items.extend(resp.get("files", []))
+        token = resp.get("nextPageToken")
+        if not token:
+            break
+    return items
+
+
+def mappa_archivio_test(drive):
+    """Legge la struttura clienti/ORDINI/OFFERTE del solo TEST BOT CLOUD.
+
+    Restituisce nomi e ID necessari all'anteprima V4. Nessuna scrittura.
+    Cartelle ORDINI/OFFERTE duplicate o mancanti restano escluse: sarà la V4
+    a segnalarle come anomalie invece di scegliere arbitrariamente.
+    """
+    _verifica_root_test(drive)
+    clienti = {}
+    for client in _lista_figli(drive, TEST_ROOT_ID, folders_only=True):
+        if client.get("id") == TEST_INBOX_ID or client.get("name") == "01 ORDINI SENZA CO":
+            continue
+        nome = client.get("name", "")
+        if not nome:
+            continue
+        entry = {"id": client["id"], "path": f"TEST BOT CLOUD / {nome}"}
+        children = _lista_figli(drive, client["id"], folders_only=True)
+        for kind in ("ORDINI", "OFFERTE"):
+            found = [x for x in children if x.get("name", "").upper() == kind]
+            if len(found) != 1:
+                continue
+            base = found[0]
+            base_path = f"{entry['path']} / {kind}"
+            years = {}
+            for year in _lista_figli(drive, base["id"], folders_only=True):
+                yname = year.get("name", "")
+                if not re.fullmatch(r"20\d{2}", yname):
+                    continue
+                files = {}
+                for item in _lista_figli(drive, year["id"], folders_only=False):
+                    if item.get("mimeType") == "application/vnd.google-apps.folder":
+                        continue
+                    files[item.get("name", "")] = {
+                        "id": item.get("id", ""),
+                        "md5Checksum": item.get("md5Checksum") or "",
+                        "size": item.get("size") or "",
+                        "modifiedTime": item.get("modifiedTime") or "",
+                    }
+                years[yname] = {"id": year["id"], "files": files}
+            entry[kind] = {"id": base["id"], "path": base_path, "years": years}
+        clienti[nome] = entry
+    return clienti
 
 
 def carica_pdf_test(drive):
