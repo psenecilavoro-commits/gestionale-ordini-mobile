@@ -761,6 +761,148 @@ if not tabs_lazy_supportate or getattr(tab_grafici, "open", False):
                     )
                 else:
                     st.warning("Nessun prezzo valido trovato per l'articolo selezionato.")
+
+            st.divider()
+            st.subheader("📦 Scarica lista articoli per cliente")
+            st.caption(
+                "Per ogni articolo viene esportato un solo record. Quantità e prezzo "
+                "sono quelli dell'ordine con la data di CONSEGNA più recente nel periodo selezionato."
+            )
+
+            # Base autonoma rispetto ai filtri del grafico in alto.
+            df_lista_articoli = st.session_state.db_ordini.copy()
+
+            # Anche questa esportazione rispetta gli articoli resi obsoleti in Analisi,
+            # senza modificare o cancellare alcun ordine dal Database generale.
+            if set_obsoleti_analisi and not df_lista_articoli.empty:
+                mask_lista_attivi = df_lista_articoli.apply(
+                    lambda r: (str(r["CLIENTE"]), str(r["ARTICOLO"]))
+                    not in set_obsoleti_analisi,
+                    axis=1,
+                )
+                df_lista_articoli = df_lista_articoli[mask_lista_attivi].copy()
+
+            df_lista_articoli["DATA_DT"] = pd.to_datetime(
+                df_lista_articoli["CONSEGNA"],
+                format="%d/%m/%Y",
+                errors="coerce",
+            )
+            df_lista_articoli = df_lista_articoli.dropna(subset=["DATA_DT"])
+
+            clienti_export_articoli = sorted([
+                str(x) for x in df_lista_articoli["CLIENTE"].unique()
+                if str(x).strip()
+            ])
+
+            col_exp_cli, col_exp_anno = st.columns(2)
+            cliente_export_articoli = col_exp_cli.selectbox(
+                "Seleziona CLIENTE:",
+                clienti_export_articoli,
+                key="analisi_export_cliente",
+            ) if clienti_export_articoli else None
+
+            anni_export_articoli = ["Tutti"]
+            if cliente_export_articoli:
+                anni_cliente = sorted(
+                    df_lista_articoli.loc[
+                        df_lista_articoli["CLIENTE"] == cliente_export_articoli,
+                        "DATA_DT"
+                    ].dt.year.dropna().astype(int).unique().tolist(),
+                    reverse=True,
+                )
+                anni_export_articoli += [str(anno) for anno in anni_cliente]
+
+            anno_export_articoli = col_exp_anno.selectbox(
+                "Seleziona ANNO CONSEGNA:",
+                anni_export_articoli,
+                key="analisi_export_anno",
+            )
+
+            if cliente_export_articoli:
+                df_export_articoli = df_lista_articoli[
+                    df_lista_articoli["CLIENTE"] == cliente_export_articoli
+                ].copy()
+
+                if anno_export_articoli != "Tutti":
+                    df_export_articoli = df_export_articoli[
+                        df_export_articoli["DATA_DT"].dt.year
+                        == int(anno_export_articoli)
+                    ].copy()
+
+                # Una sola riga per articolo: vince sempre la CONSEGNA più recente,
+                # non la data di caricamento del PDF.
+                df_export_articoli = (
+                    df_export_articoli
+                    .sort_values(
+                        by=["ARTICOLO", "DATA_DT"],
+                        ascending=[True, False],
+                        kind="mergesort",
+                    )
+                    .drop_duplicates(subset=["ARTICOLO"], keep="first")
+                    .sort_values("ARTICOLO", kind="mergesort")
+                )
+
+                colonne_export_articoli = [
+                    "CLIENTE",
+                    "N. ORDINE",
+                    "ARTICOLO",
+                    "CONSEGNA",
+                    "QUANTITÀ",
+                    "PREZZO",
+                ]
+                df_export_articoli = df_export_articoli[colonne_export_articoli].reset_index(drop=True)
+
+                if not df_export_articoli.empty:
+                    st.caption(
+                        f"Articoli distinti da esportare: **{len(df_export_articoli)}**"
+                    )
+
+                    buffer_lista_articoli = BytesIO()
+                    with pd.ExcelWriter(buffer_lista_articoli, engine="openpyxl") as writer:
+                        df_export_articoli.to_excel(
+                            writer,
+                            index=False,
+                            sheet_name="Articoli",
+                        )
+
+                        ws = writer.book["Articoli"]
+                        ws.freeze_panes = "A2"
+                        ws.auto_filter.ref = ws.dimensions
+
+                        for cell in ws[1]:
+                            cell.font = cell.font.copy(bold=True)
+
+                        for colonna in ws.columns:
+                            valori = [
+                                str(c.value) if c.value is not None else ""
+                                for c in colonna
+                            ]
+                            larghezza = min(
+                                max(max((len(v) for v in valori), default=0) + 2, 10),
+                                45,
+                            )
+                            ws.column_dimensions[colonna[0].column_letter].width = larghezza
+
+                    nome_cliente_file = re.sub(
+                        r"[^A-Za-z0-9_-]+",
+                        "_",
+                        cliente_export_articoli.strip(),
+                    ).strip("_") or "cliente"
+                    suffisso_anno = (
+                        "tutti_gli_anni"
+                        if anno_export_articoli == "Tutti"
+                        else anno_export_articoli
+                    )
+
+                    st.download_button(
+                        label="📥 Scarica lista articoli Excel",
+                        data=buffer_lista_articoli.getvalue(),
+                        file_name=f"articoli_{nome_cliente_file}_{suffisso_anno}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="download_lista_articoli_cliente",
+                    )
+                else:
+                    st.info("Nessun articolo disponibile per il cliente e l'anno selezionati.")
         else:
             st.info("Nessun articolo attivo disponibile per l'Analisi.")
 
