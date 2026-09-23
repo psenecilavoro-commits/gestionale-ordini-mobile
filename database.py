@@ -97,6 +97,52 @@ def rinomina_articolo_cloud(vecchio_nome, nuovo_nome, cliente=None):
         st.error(f"Errore nell'aggiornamento dell'articolo sul Cloud: {e}")
         return False
 
+
+# ---------------------------------------------------------
+# ARTICOLI OBSOLETI SOLO NELLA SCHEDA ANALISI
+# Restano sempre presenti nella tabella ordini generale.
+# ---------------------------------------------------------
+def carica_articoli_obsoleti_analisi_cloud():
+    try:
+        res = (
+            supabase.table("articoli_obsoleti_analisi")
+            .select("cliente, articolo")
+            .order("cliente")
+            .order("articolo")
+            .execute()
+        )
+        return [(r["cliente"], r["articolo"]) for r in (res.data or [])]
+    except Exception as e:
+        st.error(f"Errore nel caricamento degli articoli obsoleti per Analisi: {e}")
+        return []
+
+
+def aggiungi_articolo_obsoleto_analisi_cloud(cliente, articolo):
+    try:
+        cliente = str(cliente or "").strip()
+        articolo = str(articolo or "").strip()
+        if not cliente or not articolo:
+            return False
+        supabase.table("articoli_obsoleti_analisi").upsert(
+            {"cliente": cliente, "articolo": articolo},
+            on_conflict="cliente,articolo"
+        ).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nel salvataggio dell'articolo obsoleto: {e}")
+        return False
+
+
+def rimuovi_articolo_obsoleto_analisi_cloud(cliente, articolo):
+    try:
+        supabase.table("articoli_obsoleti_analisi").delete().eq(
+            "cliente", cliente
+        ).eq("articolo", articolo).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore nel ripristino dell'articolo in Analisi: {e}")
+        return False
+
 # ---------------------------------------------------------
 # GESTIONE PERMANENTE COPPIE IGNORATE SU CLOUD
 # ---------------------------------------------------------
