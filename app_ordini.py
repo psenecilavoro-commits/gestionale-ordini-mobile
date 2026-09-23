@@ -82,6 +82,9 @@ from database import (
     carica_db_cloud,
     inserisci_ordini_cloud,
     rinomina_articolo_cloud,
+    carica_articoli_obsoleti_analisi_cloud,
+    aggiungi_articolo_obsoleto_analisi_cloud,
+    rimuovi_articolo_obsoleto_analisi_cloud,
     carica_coppie_ignorate_cloud,
     aggiungi_coppia_ignorata_cloud,
     rimuovi_ultima_coppia_ignorata_cloud,
@@ -221,6 +224,11 @@ if "select_all_visite_state" not in st.session_state:
 
 if "select_all_prev_state" not in st.session_state:
     st.session_state.select_all_prev_state = False
+
+if "articoli_obsoleti_analisi_list" not in st.session_state:
+    _t_perf = time.perf_counter()
+    st.session_state.articoli_obsoleti_analisi_list = carica_articoli_obsoleti_analisi_cloud()
+    registra_tempo("Supabase · articoli obsoleti Analisi", _t_perf)
 
 if "coppie_ignorate_list" not in st.session_state:
     _t_perf = time.perf_counter()
@@ -665,7 +673,19 @@ if not tabs_lazy_supportate or getattr(tab_grafici, "open", False):
     with tab_grafici:
         st.subheader("📊 Andamento Prezzo per Articolo (Mese/Anno)")
         
+        # La scheda Analisi usa lo stesso database ordini, ma nasconde
+        # esclusivamente le coppie Cliente-Articolo marcate come obsolete.
+        # Nessuna riga viene cancellata dal Database generale.
         df_chart = st.session_state.db_ordini.copy()
+        set_obsoleti_analisi = set(st.session_state.articoli_obsoleti_analisi_list)
+
+        if set_obsoleti_analisi and not df_chart.empty:
+            mask_attivi = df_chart.apply(
+                lambda r: (str(r["CLIENTE"]), str(r["ARTICOLO"]))
+                not in set_obsoleti_analisi,
+                axis=1,
+            )
+            df_chart = df_chart[mask_attivi].copy()
         
         if not df_chart.empty:
             col_f1, col_f2 = st.columns(2)
@@ -704,14 +724,46 @@ if not tabs_lazy_supportate or getattr(tab_grafici, "open", False):
                     st.line_chart(df_grouped)
 
                     st.write("📋 Dettaglio ordini e prezzi trovati:")
+                    colonne_dettaglio = ["CLIENTE", "N. ORDINE", "CONSEGNA", "QUANTITÀ", "PREZZO"]
+                    df_dettaglio_analisi = df_art[colonne_dettaglio].copy()
                     st.dataframe(
-                        df_art[["CLIENTE", "N. ORDINE", "CONSEGNA", "QUANTITÀ", "PREZZO"]], 
-                        use_container_width=True
+                        df_dettaglio_analisi,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                    buffer_excel_analisi = BytesIO()
+                    with pd.ExcelWriter(buffer_excel_analisi, engine="openpyxl") as writer:
+                        df_dettaglio_analisi.to_excel(
+                            writer,
+                            index=False,
+                            sheet_name="Analisi",
+                        )
+
+                        ws = writer.book["Analisi"]
+                        ws.freeze_panes = "A2"
+                        ws.auto_filter.ref = ws.dimensions
+
+                        for cell in ws[1]:
+                            cell.font = cell.font.copy(bold=True)
+
+                        for colonna in ws.columns:
+                            valori = [str(c.value) if c.value is not None else "" for c in colonna]
+                            larghezza = min(max(max((len(v) for v in valori), default=0) + 2, 10), 45)
+                            ws.column_dimensions[colonna[0].column_letter].width = larghezza
+
+                    st.download_button(
+                        label="📥 Scarica Excel",
+                        data=buffer_excel_analisi.getvalue(),
+                        file_name="analisi_ordini.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="download_excel_analisi",
                     )
                 else:
                     st.warning("Nessun prezzo valido trovato per l'articolo selezionato.")
         else:
-            st.info("Carica dei file PDF nella prima scheda per generare i grafici.")
+            st.info("Nessun articolo attivo disponibile per l'Analisi.")
+
 # =========================================================
 # SCHEDA 3: GESTIONE ANOMALIE — NORMALIZZAZIONE CLIENTE
 # =========================================================
@@ -762,6 +814,45 @@ if not tabs_lazy_supportate or getattr(tab_anomalie, "open", False):
                                 st.success(f"Tutti gli ordini di '{art_da_cambiare}' per {sel_cli_nc} sono stati rinominati in '{nome_definitivo}'!")
                                 st.session_state.db_ordini = carica_db_cloud()
                                 st.rerun()
+
+                    st.write("")
+                    if st.button("🕘 Rendi obsoleto", key="btn_nc_rendi_obsoleto"):
+                        if art_da_cambiare == "-- Seleziona --":
+                            st.warning("Seleziona prima l'articolo da rendere obsoleto.")
+                        elif aggiungi_articolo_obsoleto_analisi_cloud(sel_cli_nc, art_da_cambiare):
+                            st.session_state.articoli_obsoleti_analisi_list = carica_articoli_obsoleti_analisi_cloud()
+                            st.success(
+                                f"'{art_da_cambiare}' è stato nascosto dalla scheda Analisi per {sel_cli_nc}. "
+                                "Gli ordini restano invariati nel Database."
+                            )
+                            st.rerun()
+
+                    obsoleti_cliente = sorted([
+                        articolo
+                        for cliente, articolo in st.session_state.articoli_obsoleti_analisi_list
+                        if cliente == sel_cli_nc
+                    ])
+
+                    if obsoleti_cliente:
+                        with st.expander(f"↩️ Ripristina articoli obsoleti ({len(obsoleti_cliente)})"):
+                            art_da_ripristinare = st.selectbox(
+                                "Articolo da far ricomparire in Analisi:",
+                                obsoleti_cliente,
+                                key="nc_obsoleto_da_ripristinare",
+                            )
+                            if st.button(
+                                "↩️ Ripristina in Analisi",
+                                key="btn_nc_ripristina_obsoleto",
+                            ):
+                                if rimuovi_articolo_obsoleto_analisi_cloud(
+                                    sel_cli_nc,
+                                    art_da_ripristinare,
+                                ):
+                                    st.session_state.articoli_obsoleti_analisi_list = carica_articoli_obsoleti_analisi_cloud()
+                                    st.success(
+                                        f"'{art_da_ripristinare}' è di nuovo visibile nella scheda Analisi."
+                                    )
+                                    st.rerun()
         else:
             st.warning("Database vuoto o in fase di caricamento.")
 # =========================================================
