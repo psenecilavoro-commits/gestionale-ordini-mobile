@@ -87,6 +87,11 @@ def _leggi_bytes_pdf(drive, file_info):
     return memoria
 
 
+def carica_pdf_test(drive):
+    """Scarica in memoria i soli PDF di collaudo, senza scrivere su Drive."""
+    return [(file_info, _leggi_bytes_pdf(drive, file_info).getvalue()) for file_info in elenca_pdf_test(drive)]
+
+
 def anteprima_test(drive):
     """Restituisce metadati e diagnostica testo; non modifica alcun file.
 
