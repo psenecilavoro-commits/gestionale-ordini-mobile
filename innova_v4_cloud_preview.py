@@ -12,9 +12,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
-from io import BytesIO
-
-import pdfplumber
+import pymupdf as fitz
 
 MOZZO_APPROVED_PAIR = (
     "d895978211cacbaaa314febf3e031da939e217dd0a84d32ec8d0b5199ff0ed6d",
@@ -50,8 +48,12 @@ def clean_company(s: str) -> str:
 
 
 def extract_text(content: bytes) -> str:
-    with pdfplumber.open(BytesIO(content)) as pdf:
-        return "\n".join((page.extract_text() or "") for page in pdf.pages[:3])
+    """Stessa estrazione testuale primaria della V4 locale, sulle prime 3 pagine."""
+    doc = fitz.open(stream=content, filetype="pdf")
+    try:
+        return "\n".join(page.get_text(sort=True) for page in doc[:min(len(doc), 3)])
+    finally:
+        doc.close()
 
 
 def identify_kind(text: str) -> str:
