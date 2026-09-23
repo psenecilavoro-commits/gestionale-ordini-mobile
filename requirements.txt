@@ -8,3 +8,5 @@ rapidfuzz
 google-api-python-client
 google-auth
 PyMuPDF
+pytesseract
+Pillow
