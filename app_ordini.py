@@ -253,7 +253,7 @@ if "mappa_custom_calendar" not in st.session_state:
 etichette_tabs = [
     "Database",
     "Analisi",
-    "Gestione anomalie",
+    "Gestione articoli",
     "Previsionale",
     "Monitoraggio",
 ]
