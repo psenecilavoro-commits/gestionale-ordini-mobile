@@ -5,6 +5,7 @@ import inspect
 import importlib
 import hashlib
 import time
+from io import BytesIO
 from rapidfuzz import process, fuzz
 
 from pdf_import import (
@@ -538,12 +539,36 @@ if not tabs_lazy_supportate or getattr(tab_database, "open", False):
                         st.info("Spunta prima la casella 'Seleziona' sulle righe da eliminare.")
 
             with col_exp:
-                csv = df_filtrato.drop(columns=["id"], errors="ignore").to_csv(index=False).encode('utf-8')
+                # Esporta in Excel esattamente le righe filtrate/ordinate mostrate
+                # nella tabella, escludendo soltanto l'ID tecnico nascosto.
+                df_export_excel = df_filtrato.drop(columns=["id"], errors="ignore").copy()
+
+                buffer_excel = BytesIO()
+                with pd.ExcelWriter(buffer_excel, engine="openpyxl") as writer:
+                    df_export_excel.to_excel(
+                        writer,
+                        index=False,
+                        sheet_name="Ordini",
+                    )
+
+                    ws = writer.book["Ordini"]
+                    ws.freeze_panes = "A2"
+                    ws.auto_filter.ref = ws.dimensions
+
+                    # Intestazioni evidenti e larghezze leggibili.
+                    for cell in ws[1]:
+                        cell.font = cell.font.copy(bold=True)
+
+                    for colonna in ws.columns:
+                        valori = [str(c.value) if c.value is not None else "" for c in colonna]
+                        larghezza = min(max(max((len(v) for v in valori), default=0) + 2, 10), 45)
+                        ws.column_dimensions[colonna[0].column_letter].width = larghezza
+
                 st.download_button(
-                    label="📥 Scarica CSV",
-                    data=csv,
-                    file_name='database_ordini_cloud.csv',
-                    mime='text/csv',
+                    label="📥 Scarica Excel",
+                    data=buffer_excel.getvalue(),
+                    file_name="database_ordini_cloud.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
 
             st.divider()
