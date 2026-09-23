@@ -175,17 +175,48 @@ def find_number(text: str, kind: str) -> tuple[str, str]:
         return "", ""
 
     if kind == "conferma":
-        customer = re.search(r"N\s*[°º.]?\s*Ord\.?\s*Cliente[^\n]*\n\s*(?:SENECI\s+PIETRO|PIETRO\s+SENECI)?\s*(\d{1,12})\b", head, re.I)
-        if not customer:
-            customer = re.search(r"(?:SENECI\s+PIETRO|PIETRO\s+SENECI)\s+(\d{1,8})\s+(?:BANCO|INTESA|BPER|CREDITO)", head, re.I)
-        if not customer:
-            customer = re.search(r"N\s*[°º.]?\s*Ord\.?\s*Cliente[^\n]*\n[^\n]{0,85}?\b(\d{1,8})\s+(?:INTESA|BPER|BANCO|CREDITO)", head, re.I)
+        # Le CO Innova mostrano il riferimento cliente nella riga dell'agente.
+        # Esempi reali:
+        #   SENECI PIETRO 00153 BANCA ...       -> 153
+        #   SENECI PIETRO 2026/8466 UNICREDIT  -> 8466
+        # Non considerare l'anno 2026 come numero d'ordine.
+        customer_value = ""
+        customer_slash = re.search(
+            r"(?:SENECI\s+PIETRO|PIETRO\s+SENECI)\s+20\d{2}\s*[/\\-]\s*0*(\d{1,10})\b",
+            head,
+            re.I,
+        )
+        if customer_slash:
+            customer_value = str(int(customer_slash.group(1)))
+        else:
+            customer = re.search(
+                r"N\s*[°º.]?\s*Ord\.?\s*Cliente[^\n]*\n\s*(?:SENECI\s+PIETRO|PIETRO\s+SENECI)?\s*(\d{1,12})\b",
+                head,
+                re.I,
+            )
+            if not customer:
+                customer = re.search(
+                    r"(?:SENECI\s+PIETRO|PIETRO\s+SENECI)\s+(\d{1,8})\s+(?:BANCO|INTESA|BPER|CREDITO|UNICREDIT)",
+                    head,
+                    re.I,
+                )
+            if not customer:
+                customer = re.search(
+                    r"N\s*[°º.]?\s*Ord\.?\s*Cliente[^\n]*\n[^\n]{0,85}?\b(\d{1,8})\s+(?:INTESA|BPER|BANCO|CREDITO|UNICREDIT)",
+                    head,
+                    re.I,
+                )
+            if customer:
+                raw = customer.group(1)
+                # I numeri cliente nelle CO possono essere zero-padded (00153).
+                customer_value = str(int(raw)) if raw.isdigit() else raw
+
         internal = re.search(r"CONFERMA\s+D['’]?ORDINE\s+N\s*[°º.]?\s*[:#-]?\s*(\d{1,12})", head, re.I)
         if not internal:
             internal = re.search(r"CONFERMA\s+(?:Data(?:\s+doc\.?)?\s+)?(\d{5,9})\s+D['’]?ORDINE", head, re.I)
         if not internal:
             internal = re.search(r"(\d{5,9})\s+CONFERMA\s+D['’]?ORDINE", head, re.I)
-        return (customer.group(1) if customer else "", internal.group(1) if internal else "")
+        return (customer_value, internal.group(1) if internal else "")
     return "", ""
 
 
