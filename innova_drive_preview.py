@@ -197,7 +197,7 @@ def anteprima_test(drive):
             if len("".join(testo.split())) >= 75:
                 riga["Testo leggibile"] = "Sì"
             else:
-                riga["Testo leggibile"] = "No: OCR V4 ancora da integrare"
+                riga["Testo leggibile"] = "No testo nativo: verrà tentato OCR V4"
         except Exception:
             # Non mostrare messaggi provider che potrebbero contenere dati sensibili.
             riga["Esito"] = "Errore lettura PDF: verificare autorizzazione/formato"
