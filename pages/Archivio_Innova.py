@@ -1,7 +1,7 @@
 """Pagina di collaudo del bot Innova nel Gestionale Ordini principale.
 
-Anteprima V4 generica sul solo TEST BOT CLOUD. L'esecuzione reale resta
-volutamente limitata alla coppia Mozzo già collaudata.
+Anteprima ed esecuzione generica V4 sono limitate alla sola gerarchia
+TEST BOT CLOUD. Nessun ID dell'archivio reale è usato da questa pagina.
 """
 
 import streamlit as st
@@ -17,7 +17,7 @@ from innova_drive_preview import (
 from innova_v4_cloud_full import inspect_cloud, build_preview_plan
 from innova_drive_execute_test import (
     EsecuzioneTestBloccata,
-    execute_test_pair,
+    execute_test_plan,
     make_snapshot,
 )
 
@@ -32,9 +32,9 @@ if not st.session_state.get("autenticato", False):
 
 st.title("Archiviazione documenti · TEST")
 st.info(
-    "La lettura e l'anteprima usano ora la logica V4 estesa sul solo TEST BOT CLOUD. "
-    "Il pulsante di esecuzione resta disponibile soltanto per la coppia Mozzo già "
-    "collaudata: per tutti gli altri documenti questa pagina è ancora sola anteprima."
+    "La V4 completa può ora essere eseguita sul solo TEST BOT CLOUD. "
+    "Prima di ogni scrittura il lotto viene riletto e rivalidato; "
+    "qualsiasi anomalia blocca l'esecuzione generica."
 )
 st.caption(f"Cartella di ingresso del collaudo: {TEST_INBOX_ID}")
 
@@ -71,6 +71,13 @@ def _alias_clienti():
         else:
             aliases[nome] = list(valori)
     return aliases
+
+
+def _piano_visibile(piano):
+    return [
+        {k: v for k, v in riga.items() if not k.startswith("_")}
+        for riga in piano
+    ]
 
 
 credenziali = _credenziali_drive()
@@ -142,72 +149,93 @@ if righe_base is not None and piano is not None:
 
     st.subheader("Piano di archiviazione V4 · ANTEPRIMA")
     if piano:
-        st.dataframe(piano, use_container_width=True, hide_index=True)
+        st.dataframe(
+            _piano_visibile(piano),
+            use_container_width=True,
+            hide_index=True,
+        )
     else:
         st.info("Nessun PDF da elaborare nella cartella di ingresso TEST.")
 
     anomalie = [r for r in piano if r.get("Esito") == "ANOMALIA"]
+    eseguibili = [
+        r for r in piano
+        if r.get("Esito") in {"ANTEPRIMA SPOSTA", "ANTEPRIMA RINOMINA"}
+    ]
+
     if anomalie:
         st.warning(
             f"Documenti bloccati dalla V4: {len(anomalie)}. "
-            "Nessuna esecuzione generica è abilitata."
+            "L'esecuzione generica resta disabilitata finché il piano contiene anomalie."
         )
 
-    eligible_mozzo = (
-        len(piano) == 2
-        and {r.get("Tipo") for r in piano} == {"ordine", "conferma"}
-        and {r.get("Cliente") for r in piano} == {"PASTIFICIO MOZZO SRL"}
-        and all(r.get("Esito") == "ANTEPRIMA SPOSTA" for r in piano)
-        and all("Coppia ordine-conferma" in r.get("Motivo", "") for r in piano)
-    )
+    lotto_ok = bool(piano) and not anomalie and len(eseguibili) == len(piano)
 
-    if eligible_mozzo:
+    if lotto_ok:
+        spostamenti = sum(r.get("Esito") == "ANTEPRIMA SPOSTA" for r in piano)
+        rinomine = sum(r.get("Esito") == "ANTEPRIMA RINOMINA" for r in piano)
+
         st.success(
-            "Questa è la coppia Mozzo già collaudata: è disponibile anche "
-            "l'esecuzione controllata nel solo TEST BOT CLOUD."
+            f"Lotto TEST eseguibile: {len(piano)} documenti · "
+            f"{spostamenti} spostamenti · {rinomine} rinomine."
         )
 
         st.divider()
-        st.subheader("Esecuzione di prova · solo coppia Mozzo")
+        st.subheader("Esecuzione generica · SOLO TEST BOT CLOUD")
         st.warning(
-            "Il pulsante seguente PUÒ modificare Google Drive, ma il modulo di esecuzione "
-            "è ancora hardcoded sulla sola gerarchia TEST e rivalida file, metadati e SHA-256."
+            "Il comando seguente modifica Google Drive, ma può scrivere solo nella "
+            "gerarchia TEST BOT CLOUD. Prima di ogni scrittura ricontrolla file, "
+            "metadati, SHA-256, piano V4 e collisioni. In caso di errore tenta il "
+            "rollback dell'intero lotto."
         )
 
         conferma = st.checkbox(
-            "Confermo che voglio eseguire lo spostamento esclusivamente nel TEST BOT CLOUD",
-            key="innova_test_confirm_checkbox",
+            "Confermo che voglio eseguire l'intero lotto esclusivamente nel TEST BOT CLOUD",
+            key="innova_generic_test_confirm_checkbox",
         )
         frase = st.text_input(
-            'Per abilitare il pulsante scrivi esattamente: ESEGUI TEST',
-            key="innova_test_confirm_text",
+            'Per abilitare il pulsante scrivi esattamente: ESEGUI LOTTO TEST',
+            key="innova_generic_test_confirm_text",
         )
-        abilitato = conferma and frase.strip() == "ESEGUI TEST"
+        abilitato = conferma and frase.strip() == "ESEGUI LOTTO TEST"
 
         if st.button(
-            "ESEGUI SPOSTAMENTO NEL TEST",
+            "ESEGUI LOTTO V4 NEL TEST",
             type="primary",
             disabled=not abilitato,
         ):
             try:
-                with st.spinner("Rivalidazione e spostamento della coppia nel solo TEST…"):
+                with st.spinner(
+                    "Rivalidazione completa e archiviazione del lotto nel solo TEST…"
+                ):
                     servizio = _servizio_drive()
-                    risultati = execute_test_pair(servizio, snapshot)
+                    risultati = execute_test_plan(
+                        servizio,
+                        snapshot,
+                        _alias_clienti(),
+                    )
+
                 st.session_state.innova_v4_last_execution = risultati
                 st.session_state.innova_v4_base_rows = None
                 st.session_state.innova_v4_preview_rows = None
                 st.session_state.innova_v4_snapshot = None
+                st.session_state.innova_v4_client_count = None
+
                 st.success(
-                    "Test eseguito nel solo TEST BOT CLOUD. "
+                    f"Lotto TEST completato: {len(risultati)} documenti gestiti. "
                     "Nessun archivio reale è stato usato."
                 )
-                st.dataframe(risultati, use_container_width=True, hide_index=True)
+                st.dataframe(
+                    risultati,
+                    use_container_width=True,
+                    hide_index=True,
+                )
             except EsecuzioneTestBloccata as exc:
                 st.error(str(exc))
             except Exception:
                 st.error(
-                    "Errore inatteso durante l'esecuzione TEST. "
-                    "Controllare manualmente la cartella di prova prima di riprovare."
+                    "Errore inatteso durante l'esecuzione del lotto TEST. "
+                    "Controllare manualmente TEST BOT CLOUD prima di riprovare."
                 )
 
 if st.session_state.innova_v4_last_execution:
