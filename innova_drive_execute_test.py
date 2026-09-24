@@ -362,26 +362,30 @@ def _preflight_targets(drive, plan):
 def _ensure_year_folders(drive, resolved):
     created = []
     cache = {}
-    for dest in resolved.values():
-        if dest["kind"] == "INBOX":
-            continue
-        key = (dest["base_id"], dest["year"])
-        if key in cache:
-            dest["parent_id"] = cache[key]
-            continue
+    try:
+        for dest in resolved.values():
+            if dest["kind"] == "INBOX":
+                continue
+            key = (dest["base_id"], dest["year"])
+            if key in cache:
+                dest["parent_id"] = cache[key]
+                continue
 
-        existing = _year_folder(drive, dest["base_id"], dest["year"])
-        if existing:
-            cache[key] = existing["id"]
-            dest["parent_id"] = existing["id"]
-            continue
+            existing = _year_folder(drive, dest["base_id"], dest["year"])
+            if existing:
+                cache[key] = existing["id"]
+                dest["parent_id"] = existing["id"]
+                continue
 
-        made = _create_year_folder(drive, dest["base_id"], dest["year"])
-        cache[key] = made["id"]
-        dest["parent_id"] = made["id"]
-        dest["created_year"] = made["id"]
-        created.append(made["id"])
-    return created
+            made = _create_year_folder(drive, dest["base_id"], dest["year"])
+            cache[key] = made["id"]
+            dest["parent_id"] = made["id"]
+            dest["created_year"] = made["id"]
+            created.append(made["id"])
+        return created
+    except Exception:
+        _cleanup_empty_created_folders(drive, created)
+        raise
 
 
 def _revalidate_single_source(drive, snap):
@@ -442,23 +446,25 @@ def execute_test_plan(drive, snapshot, aliases=None):
     _validate_actionable_plan(fresh_plan)
 
     resolved = _preflight_targets(drive, fresh_plan)
-    created_folders = _ensure_year_folders(drive, resolved)
 
     snapshots = {s["id"]: s for s in snapshot}
     rows_by_id = {r["_file_id"]: r for r in fresh_plan}
 
-    for file_id, row in rows_by_id.items():
-        dest = resolved[file_id]
-        _check_target_still_free(
-            drive,
-            dest["parent_id"],
-            row["Nuovo nome"],
-            file_id,
-        )
-
+    created_folders = []
     completed = []
     results = []
     try:
+        created_folders = _ensure_year_folders(drive, resolved)
+
+        for file_id, row in rows_by_id.items():
+            dest = resolved[file_id]
+            _check_target_still_free(
+                drive,
+                dest["parent_id"],
+                row["Nuovo nome"],
+                file_id,
+            )
+
         ordered_ids = sorted(
             rows_by_id,
             key=lambda file_id: (
