@@ -241,6 +241,14 @@ def _create_receipt(drive, control_id, batch_id, count):
         created.get("name") != _receipt_name(batch_id)
         or control_id not in created.get("parents", [])
     ):
+        try:
+            if created.get("id"):
+                drive.files().delete(
+                    fileId=created["id"],
+                    supportsAllDrives=True,
+                ).execute()
+        except Exception:
+            pass
         raise EsecuzioneTestBloccata(
             "Ricevuta di idempotenza TEST non verificata."
         )
