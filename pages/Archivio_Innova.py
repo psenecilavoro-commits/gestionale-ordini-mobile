@@ -34,7 +34,8 @@ st.title("Archiviazione documenti · TEST")
 st.info(
     "La V4 completa può ora essere eseguita sul solo TEST BOT CLOUD. "
     "Prima di ogni scrittura il lotto viene riletto e rivalidato; "
-    "qualsiasi anomalia blocca l'esecuzione generica."
+    "qualsiasi anomalia blocca l'esecuzione generica. "
+    "Sono attive anche protezione anti-esecuzione simultanea e ricevuta di idempotenza."
 )
 st.caption(f"Cartella di ingresso del collaudo: {TEST_INBOX_ID}")
 
@@ -186,7 +187,8 @@ if righe_base is not None and piano is not None:
             "Il comando seguente modifica Google Drive, ma può scrivere solo nella "
             "gerarchia TEST BOT CLOUD. Prima di ogni scrittura ricontrolla file, "
             "metadati, SHA-256, piano V4 e collisioni. In caso di errore tenta il "
-            "rollback dell'intero lotto."
+            "rollback dell'intero lotto. Un lock su Drive impedisce due esecuzioni "
+            "contemporanee e una ricevuta impedisce di rieseguire lo stesso identico lotto."
         )
 
         conferma = st.checkbox(
