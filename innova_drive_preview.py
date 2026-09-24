@@ -135,7 +135,11 @@ def mappa_archivio_test(drive):
     _verifica_root_test(drive)
     clienti = {}
     for client in _lista_figli(drive, TEST_ROOT_ID, folders_only=True):
-        if client.get("id") == TEST_INBOX_ID or client.get("name") == "01 ORDINI SENZA CO":
+        if (
+            client.get("id") == TEST_INBOX_ID
+            or client.get("name") == "01 ORDINI SENZA CO"
+            or client.get("name") == "_BOT_CONTROL"
+        ):
             continue
         nome = client.get("name", "")
         if not nome:
