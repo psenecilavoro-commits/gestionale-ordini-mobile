@@ -19,6 +19,7 @@ from innova_drive_execute_test import (
     EsecuzioneTestBloccata,
     execute_test_plan,
     make_snapshot,
+    self_test_protections,
 )
 
 
@@ -38,6 +39,30 @@ st.info(
     "Sono attive anche protezione anti-esecuzione simultanea e ricevuta di idempotenza."
 )
 st.caption(f"Cartella di ingresso del collaudo: {TEST_INBOX_ID}")
+
+with st.expander("Diagnostica protezioni TEST", expanded=False):
+    st.caption(
+        "Questo controllo usa soltanto la cartella tecnica _BOT_CONTROL. "
+        "Non sposta, rinomina o elimina documenti cliente."
+    )
+    if st.button("TESTA LOCK E IDEMPOTENZA", key="innova_test_protezioni"):
+        try:
+            with st.spinner("Verifica lock concorrente e idempotenza…"):
+                servizio = _servizio_drive()
+                esiti_protezioni = self_test_protections(servizio)
+            st.success("Protezioni TEST verificate.")
+            st.dataframe(
+                esiti_protezioni,
+                use_container_width=True,
+                hide_index=True,
+            )
+        except EsecuzioneTestBloccata as exc:
+            st.error(str(exc))
+        except Exception:
+            st.error(
+                "Errore inatteso durante il test delle protezioni. "
+                "Nessun documento cliente è stato modificato."
+            )
 
 
 def _credenziali_drive():
