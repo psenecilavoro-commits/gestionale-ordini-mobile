@@ -812,10 +812,15 @@ if not tabs_lazy_supportate or getattr(tab_grafici, "open", False):
                 )
                 anni_export_articoli += [str(anno) for anno in anni_cliente]
 
-            anno_export_articoli = col_exp_anno.selectbox(
-                "Seleziona ANNO CONSEGNA:",
+            anni_selezionati_export = col_exp_anno.multiselect(
+                "Seleziona ANNO/I CONSEGNA:",
                 anni_export_articoli,
-                key="analisi_export_anno",
+                default=["Tutti"],
+                key="analisi_export_anni",
+                help=(
+                    "Puoi selezionare più anni insieme. Se selezioni «Tutti», "
+                    "vengono considerati tutti gli anni disponibili."
+                ),
             )
 
             if cliente_export_articoli:
@@ -823,11 +828,20 @@ if not tabs_lazy_supportate or getattr(tab_grafici, "open", False):
                     df_lista_articoli["CLIENTE"] == cliente_export_articoli
                 ].copy()
 
-                if anno_export_articoli != "Tutti":
-                    df_export_articoli = df_export_articoli[
-                        df_export_articoli["DATA_DT"].dt.year
-                        == int(anno_export_articoli)
-                    ].copy()
+                usa_tutti_gli_anni = "Tutti" in anni_selezionati_export
+
+                if not usa_tutti_gli_anni:
+                    anni_specifici = [
+                        int(anno)
+                        for anno in anni_selezionati_export
+                        if anno != "Tutti"
+                    ]
+                    if anni_specifici:
+                        df_export_articoli = df_export_articoli[
+                            df_export_articoli["DATA_DT"].dt.year.isin(anni_specifici)
+                        ].copy()
+                    else:
+                        df_export_articoli = df_export_articoli.iloc[0:0].copy()
 
                 # Una sola riga per articolo: vince sempre la CONSEGNA più recente,
                 # non la data di caricamento del PDF.
@@ -888,11 +902,17 @@ if not tabs_lazy_supportate or getattr(tab_grafici, "open", False):
                         "_",
                         cliente_export_articoli.strip(),
                     ).strip("_") or "cliente"
-                    suffisso_anno = (
-                        "tutti_gli_anni"
-                        if anno_export_articoli == "Tutti"
-                        else anno_export_articoli
-                    )
+                    if usa_tutti_gli_anni:
+                        suffisso_anno = "tutti_gli_anni"
+                    else:
+                        anni_file = sorted(
+                            [
+                                str(anno)
+                                for anno in anni_selezionati_export
+                                if anno != "Tutti"
+                            ]
+                        )
+                        suffisso_anno = "_".join(anni_file) if anni_file else "nessun_anno"
 
                     st.download_button(
                         label="📥 Scarica lista articoli Excel",
