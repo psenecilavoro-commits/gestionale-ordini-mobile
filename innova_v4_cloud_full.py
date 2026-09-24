@@ -154,8 +154,7 @@ def find_date(text: str, kind: str, modified_time: str = "") -> datetime | None:
             "settembre": 9, "ottobre": 10, "novembre": 11, "dicembre": 12,
         }
         mt = re.search(
-            r"\b(?:Data|Inviato)\s*:?[^
-\d]{0,40}(\d{1,2})\s+"
+            r"\b(?:Data|Inviato)\s*:?[^\n\d]{0,40}(\d{1,2})\s+"
             r"(gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)"
             r"(?:\s+(\d{4}))?",
             header,
