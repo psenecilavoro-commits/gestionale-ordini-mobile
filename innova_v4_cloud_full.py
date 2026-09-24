@@ -75,6 +75,17 @@ def read_pdf_bytes(content: bytes, force_ocr: bool = False) -> str:
 def identify_kind(text: str) -> str:
     t = normalize(text[:13000])
     if "outlook" in t[:120] or ("da " in t[:250] and "inviato" in t):
+        # Alcune stampe email interne non riportano la parola "Outlook" e
+        # mettono il corpo dopo le righe Da/A/Cc/Inviato. Riconosci solo
+        # formulazioni esplicite di inserimento ordine nel messaggio iniziale.
+        opening = normalize(text[:1800])
+        if any(x in opening for x in (
+            "mi mettete per favore un ordine",
+            "mettete per favore un ordine",
+            "mettete giu per favore il seguente ordine",
+            "inserire il seguente ordine",
+        )):
+            return "ordine"
         first = re.split(r"\n\s*(?:Da\s*:|Inviato\s*:)", text[:5000], maxsplit=1, flags=re.I)[0]
         msg = normalize(first)
         if any(x in msg for x in (
@@ -116,15 +127,58 @@ def parse_date(s: str) -> datetime | None:
     return None
 
 
-def find_date(text: str, kind: str) -> datetime | None:
+def find_date(text: str, kind: str, modified_time: str = "") -> datetime | None:
     header = text[:3000]
-    if kind == "ordine" and "outlook" in normalize(header[:150]):
+    emailish = (
+        kind == "ordine"
+        and (
+            "outlook" in normalize(header[:150])
+            or ("da " in normalize(header[:300]) and "inviato" in normalize(header))
+        )
+    )
+    if emailish:
         m = re.search(
             r"\b(?:Data|Inviato)\s*:?[ \t]*(?:lunedi|martedi|mercoledi|giovedi|venerdi|sabato|domenica|lun|mar|mer|gio|ven)?[ \t]*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
             header,
             re.I,
         )
-        return parse_date(m.group(1)) if m else None
+        if m:
+            return parse_date(m.group(1))
+
+        # Es.: "Inviato: giovedì 24 settembre alle ore 10:10".
+        # Se l'anno non è stampato nel PDF, usiamo SOLO l'anno del metadato
+        # Drive; giorno e mese restano quelli espliciti nel documento.
+        month_map = {
+            "gennaio": 1, "febbraio": 2, "marzo": 3, "aprile": 4,
+            "maggio": 5, "giugno": 6, "luglio": 7, "agosto": 8,
+            "settembre": 9, "ottobre": 10, "novembre": 11, "dicembre": 12,
+        }
+        mt = re.search(
+            r"\b(?:Data|Inviato)\s*:?[^
+\d]{0,40}(\d{1,2})\s+"
+            r"(gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)"
+            r"(?:\s+(\d{4}))?",
+            header,
+            re.I,
+        )
+        if mt:
+            year = int(mt.group(3)) if mt.group(3) else None
+            if year is None and modified_time:
+                try:
+                    year = datetime.fromisoformat(
+                        modified_time.replace("Z", "+00:00")
+                    ).year
+                except Exception:
+                    year = None
+            if year and 2020 <= year <= 2100:
+                try:
+                    return datetime(
+                        year,
+                        month_map[mt.group(2).lower()],
+                        int(mt.group(1)),
+                    )
+                except ValueError:
+                    pass
     for pattern in (
         r"(?:Data\s+(?:doc\.?|documento)?)[^\n]{0,100}?(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
         r"(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
@@ -352,7 +406,11 @@ def inspect_cloud(file_info: dict, content: bytes, client_names: list[str], alia
         if not d.cliente:
             d.err = "Cliente assente dall'archivio TEST o riconoscimento ambiguo"
             return d
-        d.date = find_date(d.text, d.kind)
+        d.date = find_date(
+            d.text,
+            d.kind,
+            file_info.get("modifiedTime") or "",
+        )
         if not d.date:
             d.err = "Data del documento non riconosciuta"
             return d
@@ -367,21 +425,50 @@ def inspect_cloud(file_info: dict, content: bytes, client_names: list[str], alia
 
 
 def shared_distinctive_reference(order: CloudDoc, confirmation: CloudDoc) -> bool:
+    """Abbina senza numero solo con una referenza merceologica condivisa.
+
+    Cliente e data uguali NON bastano. Il chiamante richiede inoltre un
+    candidato univoco per ciascun lato.
+    """
     if not order.date or not confirmation.date or order.date.date() != confirmation.date.date():
         return False
     if "outlook" not in normalize(order.text[:150]):
         return False
-    latest = re.split(r"\n\s*(?:Da\s*:|Inviato\s*:)", order.text[:5000], maxsplit=1, flags=re.I)[0]
-    m = re.search(r"(?:seguente ordine|confermiamo ordine)\s*[:?!.]?\s*\n\s*([^\n]+)", latest, re.I)
-    if not m:
-        return False
-    product = set(re.findall(r"\b[a-z]{7,}\b", normalize(m.group(1))))
-    excluded = {
-        "quantita", "consegna", "cartone", "cliente", "ordine", "seguente",
-        "seneci", "pietro", "maniglie", "settimanale", "settimana",
+
+    order_text = normalize(order.text[:9000])
+    confirmation_text = normalize(confirmation.text[:4500])
+
+    # Codici prodotto brevi ma distintivi, es. C2.
+    ref_pattern = r"\b(?:[a-z]{1,5}\d{1,6}|\d{1,6}[a-z]{1,5})\b"
+    order_refs = set(re.findall(ref_pattern, order_text))
+    confirmation_refs = set(re.findall(ref_pattern, confirmation_text))
+    excluded_refs = {
+        "2026", "2025", "2024", "2023", "2022",
     }
-    product -= excluded | set(clean_company(order.cliente).split())
-    return bool(product & set(re.findall(r"\b[a-z]{7,}\b", normalize(confirmation.text[:3500]))))
+    shared_refs = (order_refs & confirmation_refs) - excluded_refs
+    if shared_refs:
+        return True
+
+    # Per descrizioni testuali (es. "bianca stampata") richiediamo almeno
+    # DUE parole distintive comuni, non una sola parola generica.
+    excluded = {
+        "quantita", "consegna", "consegne", "cartone", "cartoni", "scatola",
+        "scatole", "cliente", "ordine", "seguente", "conferma", "offerta",
+        "prezzo", "prezzi", "bancali", "pallet", "seneci", "pietro",
+        "maniglie", "settimanale", "settimana", "innovagroup", "innova",
+        "group", "grazie", "saluti", "cordiali", "fattura", "fatturazione",
+    }
+    excluded |= set(clean_company(order.cliente).split())
+
+    order_words = {
+        w for w in re.findall(r"\b[a-z]{6,}\b", order_text)
+        if w not in excluded
+    }
+    confirmation_words = {
+        w for w in re.findall(r"\b[a-z]{6,}\b", confirmation_text)
+        if w not in excluded
+    }
+    return len(order_words & confirmation_words) >= 2
 
 
 MOZZO_APPROVED_PAIR = (
