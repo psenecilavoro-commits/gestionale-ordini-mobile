@@ -608,6 +608,101 @@ def _cleanup_empty_created_folders(drive, created_ids):
     return failed
 
 
+def self_test_protections(drive):
+    """Verifica lock concorrente e ricevuta di idempotenza nel solo TEST.
+
+    Crea solo oggetti tecnici temporanei dentro TEST BOT CLOUD/_BOT_CONTROL.
+    Non legge, rinomina o sposta documenti cliente.
+    """
+    _verify_test_root_and_inbox(drive)
+    control = _ensure_control_folder(drive)
+    first_lock = None
+    temp_receipt_id = None
+    checks = []
+
+    try:
+        first_lock = _acquire_drive_lock(drive, control["id"])
+        checks.append({
+            "Protezione": "Lock primario",
+            "Esito": "OK",
+            "Dettaglio": "Lock TEST acquisito correttamente.",
+        })
+
+        second_blocked = False
+        try:
+            _acquire_drive_lock(drive, control["id"])
+        except EsecuzioneTestBloccata:
+            second_blocked = True
+
+        if not second_blocked:
+            raise EsecuzioneTestBloccata(
+                "Self-test fallito: una seconda esecuzione non è stata bloccata."
+            )
+        checks.append({
+            "Protezione": "Concorrenza",
+            "Esito": "OK",
+            "Dettaglio": "Una seconda esecuzione simultanea viene bloccata.",
+        })
+
+    finally:
+        _release_drive_lock(drive, first_lock)
+
+    batch_id = "selftest_" + uuid.uuid4().hex
+    try:
+        created = drive.files().create(
+            body={
+                "name": _receipt_name(batch_id),
+                "mimeType": "application/octet-stream",
+                "parents": [control["id"]],
+                "appProperties": {
+                    "batch_id": batch_id,
+                    "status": "selftest",
+                },
+            },
+            fields="id,name,parents",
+            supportsAllDrives=True,
+        ).execute()
+        temp_receipt_id = created.get("id")
+        if (
+            created.get("name") != _receipt_name(batch_id)
+            or control["id"] not in created.get("parents", [])
+        ):
+            raise EsecuzioneTestBloccata(
+                "Self-test fallito: ricevuta tecnica non verificata."
+            )
+        if not _receipt_exists(drive, control["id"], batch_id):
+            raise EsecuzioneTestBloccata(
+                "Self-test fallito: ricevuta idempotenza non rilevata."
+            )
+        checks.append({
+            "Protezione": "Idempotenza",
+            "Esito": "OK",
+            "Dettaglio": "La ricevuta di lotto completato viene rilevata correttamente.",
+        })
+    finally:
+        if temp_receipt_id:
+            try:
+                drive.files().delete(
+                    fileId=temp_receipt_id,
+                    supportsAllDrives=True,
+                ).execute()
+            except Exception as exc:
+                raise EsecuzioneTestBloccata(
+                    "Self-test riuscito, ma il file tecnico temporaneo non è stato rimosso."
+                ) from exc
+
+    if _receipt_exists(drive, control["id"], batch_id):
+        raise EsecuzioneTestBloccata(
+            "Self-test fallito: ricevuta temporanea rimasta nella cartella di controllo."
+        )
+    checks.append({
+        "Protezione": "Pulizia tecnica",
+        "Esito": "OK",
+        "Dettaglio": "Gli oggetti temporanei del test sono stati rimossi.",
+    })
+    return checks
+
+
 def execute_test_plan(drive, snapshot, aliases=None):
     """Esegue l'intero piano V4 come lotto logico nel solo TEST BOT CLOUD."""
     _verify_test_root_and_inbox(drive)
