@@ -594,6 +594,7 @@ def build_preview_plan(docs: list[CloudDoc], destinations: dict, inbox_path: str
     for r in rows:
         d = r["d"]
         output.append({
+            "_file_id": d.file_id,
             "File originale": d.original_name,
             "Tipo": d.kind,
             "Cliente": d.cliente,
