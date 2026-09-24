@@ -501,12 +501,6 @@ def _preflight(drive, runtime, rows):
                     raise EsecuzioneRealeBloccata(
                         f"Destinazione REALE già occupata: {target_name}."
                     )
-                source_md5 = next(
-                    (
-                        snap_md5 for snap_md5 in [None]
-                    ),
-                    None,
-                )
     return resolved
 
 
