@@ -186,7 +186,14 @@ def find_number(text: str, kind: str) -> tuple[str, str]:
             head,
             re.I,
         )
-        if customer_slash:
+        customer_of = re.search(
+            r"(?:SENECI\s+PIETRO|PIETRO\s+SENECI)\s+[O0]F\s*[/\\-]\s*20\d{2}0*(\d{1,5})\b",
+            head,
+            re.I,
+        )
+        if customer_of:
+            customer_value = str(int(customer_of.group(1)))
+        elif customer_slash:
             customer_value = str(int(customer_slash.group(1)))
         else:
             customer = re.search(
