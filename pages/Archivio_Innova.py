@@ -28,6 +28,10 @@ from innova_drive_execute_test import (
     make_snapshot,
     self_test_protections,
 )
+from innova_drive_execute_real import (
+    EsecuzioneRealeBloccata,
+    execute_real_group,
+)
 
 
 st.set_page_config(page_title="Archivio Innova · TEST", layout="wide")
@@ -90,6 +94,57 @@ def _piano_visibile(piano):
     ]
 
 
+def _gruppi_reali_eseguibili(piano):
+    allowed = {"ANTEPRIMA SPOSTA", "ANTEPRIMA RINOMINA"}
+    grouped = {}
+    for row in piano or []:
+        gid = row.get("_group_id")
+        if not gid:
+            continue
+        grouped.setdefault(gid, []).append(row)
+
+    result = []
+    for gid, rows in grouped.items():
+        if any(row.get("Esito") not in allowed for row in rows):
+            continue
+
+        if gid.startswith("PAIR:"):
+            if len(rows) != 2 or {row.get("Tipo") for row in rows} != {"ordine", "conferma"}:
+                continue
+            if any("Coppia ordine-conferma" not in row.get("Motivo", "") for row in rows):
+                continue
+            first = rows[0]
+            order_no = next(
+                (str(row.get("N. ordine")) for row in rows if row.get("N. ordine")),
+                "",
+            )
+            suffix = f"ordine {order_no}" if order_no else first.get("Data", "")
+            label = f"COPPIA · {first.get('Cliente', '')} · {suffix}"
+        else:
+            if len(rows) != 1:
+                continue
+            row = rows[0]
+            if row.get("Tipo") == "offerta":
+                prefix = "OFFERTA"
+            elif row.get("Esito") == "ANTEPRIMA RINOMINA":
+                prefix = "ORDINE IN ATTESA"
+            else:
+                prefix = str(row.get("Tipo", "")).upper()
+            label = f"{prefix} · {row.get('Cliente', '')} · {row.get('File originale', '')}"
+
+        result.append({
+            "group_id": gid,
+            "label": label,
+            "file_ids": [row.get("_file_id") for row in rows],
+            "rows": rows,
+        })
+
+    result.sort(key=lambda item: item["label"].casefold())
+    for i, item in enumerate(result, start=1):
+        item["display"] = f"{i}. {item['label']}"
+    return result
+
+
 credenziali = _credenziali_drive()
 if credenziali is None:
     st.warning("Autorizzazione Drive non configurata nei Secrets di questa app di test.")
@@ -97,7 +152,18 @@ if credenziali is None:
 
 
 st.divider()
-st.subheader("Archivio REALE · SOLO LETTURA")
+st.subheader("Archivio REALE")
+
+for key in (
+    "innova_real_preview_rows",
+    "innova_real_snapshot",
+    "innova_real_client_count",
+    "innova_real_file_count",
+    "innova_real_last_execution",
+):
+    if key not in st.session_state:
+        st.session_state[key] = None
+
 try:
     runtime_reale = real_runtime_from_secrets(st.secrets)
 except Exception as exc:
@@ -106,21 +172,26 @@ except Exception as exc:
 
 if runtime_reale is None:
     st.info(
-        "La configurazione REALE non è ancora presente nei Secrets. "
-        "Aggiungila con writes_enabled = false: finché resta false, "
-        "questa pagina non abilita alcuna scrittura sull'archivio reale."
-    )
-elif runtime_reale.writes_enabled:
-    st.error(
-        "Sicurezza: writes_enabled è TRUE nei Secrets. "
-        "Questa fase richiede writes_enabled = false; anteprima REALE bloccata."
+        "La configurazione REALE non è presente nei Secrets. "
+        "Nessuna lettura o scrittura REALE è disponibile."
     )
 else:
-    st.success(
-        "Configurazione REALE caricata con scritture DISABILITATE. "
-        "Disponibile solo anteprima in lettura."
-    )
-    if st.button("ANALIZZA ARCHIVIO REALE · SOLA LETTURA", key="innova_real_preview"):
+    if runtime_reale.writes_enabled:
+        st.warning(
+            "SCRITTURE REALI ABILITATE nei Secrets. "
+            "L'analisi resta sempre in sola lettura; l'esecuzione richiede inoltre "
+            "la selezione di UN SOLO gruppo, una conferma esplicita e la frase di sicurezza."
+        )
+    else:
+        st.success(
+            "Configurazione REALE caricata con scritture DISABILITATE. "
+            "È disponibile soltanto l'anteprima."
+        )
+
+    if st.button(
+        "ANALIZZA ARCHIVIO REALE · SOLA LETTURA",
+        key="innova_real_preview",
+    ):
         try:
             with st.spinner("Lettura archivio REALE senza modifiche…"):
                 servizio = _servizio_drive()
@@ -129,7 +200,12 @@ else:
                 file_reali = load_pdf_inbox(servizio, runtime_reale)
                 aliases = _alias_clienti()
                 docs_reali = [
-                    inspect_cloud(info, contenuto, sorted(archivio_reale.keys()), aliases)
+                    inspect_cloud(
+                        info,
+                        contenuto,
+                        sorted(archivio_reale.keys()),
+                        aliases,
+                    )
                     for info, contenuto in file_reali
                 ]
                 piano_reale = build_preview_plan(
@@ -137,39 +213,164 @@ else:
                     archivio_reale,
                     f"{runtime_reale.root_name} / 01 ORDINI SENZA CO",
                 )
-
-            st.success(
-                f"Anteprima REALE completata in sola lettura: "
-                f"{len(archivio_reale)} clienti rilevati · {len(file_reali)} PDF in ingresso. "
-                "Nessun file modificato."
-            )
-            if piano_reale:
-                st.dataframe(
-                    _piano_visibile(piano_reale),
-                    use_container_width=True,
-                    hide_index=True,
+                snapshot_reale = (
+                    make_snapshot(file_reali, docs_reali, piano_reale)
+                    if file_reali
+                    else []
                 )
-                anomalie_reali = [
-                    r for r in piano_reale if r.get("Esito") == "ANOMALIA"
-                ]
-                if anomalie_reali:
-                    st.warning(
-                        f"Anteprima REALE: {len(anomalie_reali)} documenti richiedono controllo."
-                    )
-                else:
-                    st.success(
-                        "Anteprima REALE senza anomalie. "
-                        "Le scritture restano comunque disabilitate."
-                    )
-            else:
-                st.info("Nessun PDF presente nella cartella REALE di ingresso.")
+
+            st.session_state.innova_real_preview_rows = piano_reale
+            st.session_state.innova_real_snapshot = snapshot_reale
+            st.session_state.innova_real_client_count = len(archivio_reale)
+            st.session_state.innova_real_file_count = len(file_reali)
+            st.session_state.innova_real_last_execution = None
         except ArchivioReadOnlyError as exc:
             st.error(str(exc))
         except Exception:
+            st.session_state.innova_real_preview_rows = None
+            st.session_state.innova_real_snapshot = None
+            st.session_state.innova_real_client_count = None
+            st.session_state.innova_real_file_count = None
             st.error(
                 "Errore inatteso durante l'anteprima REALE. "
                 "Nessun file è stato modificato."
             )
+
+    piano_reale = st.session_state.innova_real_preview_rows
+    snapshot_reale = st.session_state.innova_real_snapshot
+
+    if piano_reale is not None:
+        st.success(
+            f"Anteprima REALE completata: "
+            f"{st.session_state.innova_real_client_count or 0} clienti rilevati · "
+            f"{st.session_state.innova_real_file_count or 0} PDF in ingresso. "
+            "Nessun file modificato."
+        )
+
+        if piano_reale:
+            st.dataframe(
+                _piano_visibile(piano_reale),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("Nessun PDF presente nella cartella REALE di ingresso.")
+
+        anomalie_reali = [
+            row for row in piano_reale
+            if row.get("Esito") == "ANOMALIA"
+        ]
+        if anomalie_reali:
+            st.warning(
+                f"Anteprima REALE: {len(anomalie_reali)} documenti richiedono controllo. "
+                "I gruppi corretti restano separati dalle anomalie."
+            )
+        elif piano_reale:
+            st.success("Anteprima REALE senza anomalie.")
+
+        gruppi_reali = _gruppi_reali_eseguibili(piano_reale)
+
+        if not runtime_reale.writes_enabled:
+            if gruppi_reali:
+                st.info(
+                    f"Gruppi V4 eseguibili rilevati: {len(gruppi_reali)}. "
+                    "Le scritture sono ancora disabilitate dai Secrets."
+                )
+        elif gruppi_reali:
+            st.divider()
+            st.subheader("Esecuzione REALE supervisionata · UN SOLO GRUPPO")
+            st.error(
+                "ATTENZIONE: il comando seguente modifica davvero l'archivio REALE. "
+                "Al primo utilizzo verrà creata anche la cartella tecnica _BOT_CONTROL "
+                "sotto la radice dell'archivio. Il writer rivalida l'intera cartella di "
+                "ingresso, il piano V4, hash/metadati, destinazioni e collisioni prima "
+                "di scrivere."
+            )
+
+            options = ["— seleziona un gruppo —"] + [
+                item["display"] for item in gruppi_reali
+            ]
+            scelta = st.selectbox(
+                "Gruppo da eseguire",
+                options,
+                key="innova_real_group_choice",
+            )
+
+            if scelta != options[0]:
+                selected_index = options.index(scelta) - 1
+                selected_group = gruppi_reali[selected_index]
+
+                st.caption(
+                    "Verranno toccati esclusivamente i documenti mostrati qui sotto."
+                )
+                st.dataframe(
+                    _piano_visibile(selected_group["rows"]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                conferma_reale = st.checkbox(
+                    "Confermo di voler eseguire SOLO il gruppo selezionato nell'archivio REALE",
+                    key="innova_real_confirm_checkbox",
+                )
+                frase_reale = st.text_input(
+                    'Per abilitare il pulsante scrivi esattamente: ESEGUI REALE',
+                    key="innova_real_confirm_text",
+                )
+                enabled_real = (
+                    conferma_reale
+                    and frase_reale.strip() == "ESEGUI REALE"
+                )
+
+                if st.button(
+                    "ESEGUI GRUPPO NELL'ARCHIVIO REALE",
+                    type="primary",
+                    disabled=not enabled_real,
+                    key="innova_real_execute",
+                ):
+                    try:
+                        with st.spinner(
+                            "Rivalidazione completa e scrittura del solo gruppo selezionato…"
+                        ):
+                            servizio = _servizio_drive()
+                            risultati_reali = execute_real_group(
+                                servizio,
+                                runtime_reale,
+                                snapshot_reale,
+                                selected_group["file_ids"],
+                                _alias_clienti(),
+                            )
+
+                        st.session_state.innova_real_last_execution = risultati_reali
+                        st.session_state.innova_real_preview_rows = None
+                        st.session_state.innova_real_snapshot = None
+                        st.session_state.innova_real_client_count = None
+                        st.session_state.innova_real_file_count = None
+
+                        st.success(
+                            f"Esecuzione REALE completata: "
+                            f"{len(risultati_reali)} documenti gestiti."
+                        )
+                        st.dataframe(
+                            risultati_reali,
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                    except EsecuzioneRealeBloccata as exc:
+                        st.error(str(exc))
+                    except Exception:
+                        st.error(
+                            "Errore inatteso durante l'esecuzione REALE. "
+                            "Controllare manualmente l'archivio prima di riprovare."
+                        )
+
+if st.session_state.innova_real_last_execution:
+    st.subheader("Ultima esecuzione REALE")
+    st.dataframe(
+        st.session_state.innova_real_last_execution,
+        use_container_width=True,
+        hide_index=True,
+    )
 
 
 with st.expander("Diagnostica protezioni TEST", expanded=False):
