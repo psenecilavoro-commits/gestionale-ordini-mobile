@@ -436,7 +436,24 @@ def shared_distinctive_reference(order: CloudDoc, confirmation: CloudDoc) -> boo
         return False
 
     order_text = normalize(order.text[:9000])
-    confirmation_text = normalize(confirmation.text[:4500])
+
+    # Nella conferma consideriamo soprattutto la sezione articoli, evitando
+    # che indirizzo/firma del cliente diventino falsi "riferimenti comuni".
+    confirmation_raw = confirmation.text[:6000]
+    product_part = re.split(
+        r"Page\s+1\s+of\s+\d+",
+        confirmation_raw,
+        maxsplit=1,
+        flags=re.I,
+    )
+    confirmation_product = product_part[1] if len(product_part) == 2 else confirmation_raw
+    confirmation_product = re.split(
+        r"DATA\s+TIMBRO|FIRMA\s+DEL\s+RESPONSABILE|TOTALE\s+ORDINE",
+        confirmation_product,
+        maxsplit=1,
+        flags=re.I,
+    )[0]
+    confirmation_text = normalize(confirmation_product)
 
     # Codici prodotto brevi ma distintivi, es. C2.
     ref_pattern = r"\b(?:[a-z]{1,5}\d{1,6}|\d{1,6}[a-z]{1,5})\b"
