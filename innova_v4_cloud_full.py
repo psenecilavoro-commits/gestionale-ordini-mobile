@@ -693,11 +693,18 @@ def build_preview_plan(docs: list[CloudDoc], destinations: dict, inbox_path: str
                 r["action"] = "ANOMALIA"
                 r["reason"] = "Coppia bloccata: " + reason
 
+    group_ids = {}
+    for order_doc, confirmation_doc in pairs:
+        gid = "PAIR:" + ":".join(sorted((order_doc.file_id, confirmation_doc.file_id)))
+        group_ids[order_doc.file_id] = gid
+        group_ids[confirmation_doc.file_id] = gid
+
     output = []
     for r in rows:
         d = r["d"]
         output.append({
             "_file_id": d.file_id,
+            "_group_id": group_ids.get(d.file_id, "SINGLE:" + d.file_id),
             "File originale": d.original_name,
             "Tipo": d.kind,
             "Cliente": d.cliente,
