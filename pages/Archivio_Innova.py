@@ -15,6 +15,13 @@ from innova_drive_preview import (
     mappa_archivio_test,
 )
 from innova_v4_cloud_full import inspect_cloud, build_preview_plan
+from innova_drive_modes import real_runtime_from_secrets
+from innova_drive_readonly import (
+    ArchivioReadOnlyError,
+    load_pdf_inbox,
+    map_archive,
+    verify_runtime,
+)
 from innova_drive_execute_test import (
     EsecuzioneTestBloccata,
     execute_test_plan,
@@ -87,6 +94,82 @@ credenziali = _credenziali_drive()
 if credenziali is None:
     st.warning("Autorizzazione Drive non configurata nei Secrets di questa app di test.")
     st.stop()
+
+
+st.divider()
+st.subheader("Archivio REALE · SOLO LETTURA")
+try:
+    runtime_reale = real_runtime_from_secrets(st.secrets)
+except Exception as exc:
+    runtime_reale = None
+    st.error(f"Configurazione REALE non valida: {exc}")
+
+if runtime_reale is None:
+    st.info(
+        "La configurazione REALE non è ancora presente nei Secrets. "
+        "Aggiungila con writes_enabled = false: finché resta false, "
+        "questa pagina non abilita alcuna scrittura sull'archivio reale."
+    )
+elif runtime_reale.writes_enabled:
+    st.error(
+        "Sicurezza: writes_enabled è TRUE nei Secrets. "
+        "Questa fase richiede writes_enabled = false; anteprima REALE bloccata."
+    )
+else:
+    st.success(
+        "Configurazione REALE caricata con scritture DISABILITATE. "
+        "Disponibile solo anteprima in lettura."
+    )
+    if st.button("ANALIZZA ARCHIVIO REALE · SOLA LETTURA", key="innova_real_preview"):
+        try:
+            with st.spinner("Lettura archivio REALE senza modifiche…"):
+                servizio = _servizio_drive()
+                verify_runtime(servizio, runtime_reale)
+                archivio_reale = map_archive(servizio, runtime_reale)
+                file_reali = load_pdf_inbox(servizio, runtime_reale)
+                aliases = _alias_clienti()
+                docs_reali = [
+                    inspect_cloud(info, contenuto, sorted(archivio_reale.keys()), aliases)
+                    for info, contenuto in file_reali
+                ]
+                piano_reale = build_preview_plan(
+                    docs_reali,
+                    archivio_reale,
+                    f"{runtime_reale.root_name} / 01 ORDINI SENZA CO",
+                )
+
+            st.success(
+                f"Anteprima REALE completata in sola lettura: "
+                f"{len(archivio_reale)} clienti rilevati · {len(file_reali)} PDF in ingresso. "
+                "Nessun file modificato."
+            )
+            if piano_reale:
+                st.dataframe(
+                    _piano_visibile(piano_reale),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                anomalie_reali = [
+                    r for r in piano_reale if r.get("Esito") == "ANOMALIA"
+                ]
+                if anomalie_reali:
+                    st.warning(
+                        f"Anteprima REALE: {len(anomalie_reali)} documenti richiedono controllo."
+                    )
+                else:
+                    st.success(
+                        "Anteprima REALE senza anomalie. "
+                        "Le scritture restano comunque disabilitate."
+                    )
+            else:
+                st.info("Nessun PDF presente nella cartella REALE di ingresso.")
+        except ArchivioReadOnlyError as exc:
+            st.error(str(exc))
+        except Exception:
+            st.error(
+                "Errore inatteso durante l'anteprima REALE. "
+                "Nessun file è stato modificato."
+            )
 
 
 with st.expander("Diagnostica protezioni TEST", expanded=False):
