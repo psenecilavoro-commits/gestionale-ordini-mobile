@@ -10,8 +10,10 @@ Il modulo non contiene ID dell'archivio reale.
 from __future__ import annotations
 
 import hashlib
+import time
+import uuid
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 
 from innova_drive_preview import (
     TEST_ROOT_ID,
@@ -25,6 +27,10 @@ FOLDER_MIME = "application/vnd.google-apps.folder"
 TEST_ROOT_NAME = "TEST BOT CLOUD"
 TEST_INBOX_NAME = "01 ORDINI SENZA CO"
 INBOX_PATH = f"{TEST_ROOT_NAME} / {TEST_INBOX_NAME}"
+CONTROL_FOLDER_NAME = "_BOT_CONTROL"
+LOCK_PREFIX = "LOCK_"
+RECEIPT_PREFIX = "RECEIPT_"
+LOCK_STALE_SECONDS = 15 * 60
 
 
 class EsecuzioneTestBloccata(RuntimeError):
@@ -48,7 +54,7 @@ def _list_children(drive, parent_id, folders_only=False):
     while True:
         resp = drive.files().list(
             q=query,
-            fields="nextPageToken,files(id,name,mimeType,parents,size,md5Checksum,modifiedTime)",
+            fields="nextPageToken,files(id,name,mimeType,parents,size,md5Checksum,modifiedTime,createdTime)",
             pageSize=1000,
             pageToken=token,
             supportsAllDrives=True,
@@ -78,6 +84,166 @@ def _verify_test_root_and_inbox(drive):
         or TEST_ROOT_ID not in inbox.get("parents", [])
     ):
         raise EsecuzioneTestBloccata("Cartella di ingresso TEST non valida.")
+
+
+def _ensure_control_folder(drive):
+    found = [
+        item for item in _list_children(drive, TEST_ROOT_ID, folders_only=True)
+        if item.get("name") == CONTROL_FOLDER_NAME
+    ]
+    if len(found) > 1:
+        raise EsecuzioneTestBloccata(
+            "Più cartelle di controllo BOT nel TEST: esecuzione bloccata."
+        )
+    if found:
+        return found[0]
+
+    created = drive.files().create(
+        body={
+            "name": CONTROL_FOLDER_NAME,
+            "mimeType": FOLDER_MIME,
+            "parents": [TEST_ROOT_ID],
+        },
+        fields="id,name,mimeType,parents",
+        supportsAllDrives=True,
+    ).execute()
+    if (
+        created.get("name") != CONTROL_FOLDER_NAME
+        or created.get("mimeType") != FOLDER_MIME
+        or TEST_ROOT_ID not in created.get("parents", [])
+    ):
+        raise EsecuzioneTestBloccata(
+            "Creazione cartella di controllo BOT non verificata."
+        )
+    return created
+
+
+def _parse_rfc3339(value):
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _cleanup_stale_locks(drive, control_id):
+    now = datetime.now(timezone.utc)
+    for item in _list_children(drive, control_id, folders_only=False):
+        name = item.get("name", "")
+        if not name.startswith(LOCK_PREFIX):
+            continue
+        modified = _parse_rfc3339(item.get("modifiedTime", ""))
+        if modified is None:
+            continue
+        age = (now - modified).total_seconds()
+        if age > LOCK_STALE_SECONDS:
+            try:
+                drive.files().delete(
+                    fileId=item["id"],
+                    supportsAllDrives=True,
+                ).execute()
+            except Exception:
+                pass
+
+
+def _acquire_drive_lock(drive, control_id):
+    _cleanup_stale_locks(drive, control_id)
+    token = uuid.uuid4().hex
+    lock_name = LOCK_PREFIX + token
+    created = drive.files().create(
+        body={
+            "name": lock_name,
+            "mimeType": "application/octet-stream",
+            "parents": [control_id],
+            "appProperties": {"token": token, "purpose": "innova_v4_test_lock"},
+        },
+        fields="id,name,parents,modifiedTime",
+        supportsAllDrives=True,
+    ).execute()
+
+    if control_id not in created.get("parents", []):
+        raise EsecuzioneTestBloccata("Lock TEST non creato nella cartella prevista.")
+
+    # Due controlli separati riducono la finestra in cui due sessioni possono
+    # acquisire quasi contemporaneamente il lock.
+    for delay in (0.8, 1.2):
+        time.sleep(delay)
+        locks = [
+            item for item in _list_children(drive, control_id, folders_only=False)
+            if item.get("name", "").startswith(LOCK_PREFIX)
+        ]
+        own = [item for item in locks if item.get("id") == created.get("id")]
+        if len(locks) != 1 or len(own) != 1:
+            try:
+                drive.files().delete(
+                    fileId=created["id"],
+                    supportsAllDrives=True,
+                ).execute()
+            except Exception:
+                pass
+            raise EsecuzioneTestBloccata(
+                "Un'altra esecuzione del bot risulta attiva. Riprovare tra poco."
+            )
+    return created["id"]
+
+
+def _release_drive_lock(drive, lock_id):
+    if not lock_id:
+        return
+    try:
+        drive.files().delete(
+            fileId=lock_id,
+            supportsAllDrives=True,
+        ).execute()
+    except Exception:
+        pass
+
+
+def _batch_id(snapshot):
+    h = hashlib.sha256()
+    for snap in sorted(snapshot, key=lambda x: x["id"]):
+        h.update(snap["id"].encode("utf-8"))
+        h.update(b"\0")
+        h.update(snap["sha256"].encode("ascii"))
+        h.update(b"\0")
+        h.update(snap["name"].encode("utf-8"))
+        h.update(b"\n")
+    return h.hexdigest()
+
+
+def _receipt_name(batch_id):
+    return f"{RECEIPT_PREFIX}{batch_id}.ok"
+
+
+def _receipt_exists(drive, control_id, batch_id):
+    expected = _receipt_name(batch_id)
+    return any(
+        item.get("name") == expected
+        for item in _list_children(drive, control_id, folders_only=False)
+    )
+
+
+def _create_receipt(drive, control_id, batch_id, count):
+    created = drive.files().create(
+        body={
+            "name": _receipt_name(batch_id),
+            "mimeType": "application/octet-stream",
+            "parents": [control_id],
+            "appProperties": {
+                "batch_id": batch_id,
+                "count": str(count),
+                "status": "completed",
+            },
+        },
+        fields="id,name,parents",
+        supportsAllDrives=True,
+    ).execute()
+    if (
+        created.get("name") != _receipt_name(batch_id)
+        or control_id not in created.get("parents", [])
+    ):
+        raise EsecuzioneTestBloccata(
+            "Ricevuta di idempotenza TEST non verificata."
+        )
 
 
 def _unique_folder_named(drive, parent_id, name):
@@ -437,176 +603,200 @@ def _cleanup_empty_created_folders(drive, created_ids):
 def execute_test_plan(drive, snapshot, aliases=None):
     """Esegue l'intero piano V4 come lotto logico nel solo TEST BOT CLOUD."""
     _verify_test_root_and_inbox(drive)
+    control = _ensure_control_folder(drive)
+    lock_id = None
 
-    current_files = carica_pdf_test(drive)
-    _revalidate_source_set(current_files, snapshot)
-
-    fresh_plan = _fresh_plan(drive, current_files, aliases or {})
-    _compare_plans(snapshot, fresh_plan)
-    _validate_actionable_plan(fresh_plan)
-
-    resolved = _preflight_targets(drive, fresh_plan)
-
-    snapshots = {s["id"]: s for s in snapshot}
-    rows_by_id = {r["_file_id"]: r for r in fresh_plan}
-
-    created_folders = []
-    completed = []
-    results = []
     try:
-        created_folders = _ensure_year_folders(drive, resolved)
+        lock_id = _acquire_drive_lock(drive, control["id"])
 
-        for file_id, row in rows_by_id.items():
-            dest = resolved[file_id]
-            _check_target_still_free(
-                drive,
-                dest["parent_id"],
-                row["Nuovo nome"],
-                file_id,
-            )
-
-        ordered_ids = sorted(
-            rows_by_id,
-            key=lambda file_id: (
-                0 if rows_by_id[file_id]["Tipo"] == "ordine" else
-                1 if rows_by_id[file_id]["Tipo"] == "conferma" else 2,
-                rows_by_id[file_id]["Cliente"],
-                rows_by_id[file_id]["File originale"],
-            ),
-        )
-
-        for file_id in ordered_ids:
-            snap = snapshots[file_id]
-            row = rows_by_id[file_id]
-            dest = resolved[file_id]
-            target_name = row["Nuovo nome"]
-
-            _revalidate_single_source(drive, snap)
-            _check_target_still_free(
-                drive,
-                dest["parent_id"],
-                target_name,
-                file_id,
-            )
-
-            if dest["parent_id"] == TEST_INBOX_ID and snap["name"] == target_name:
-                results.append({
-                    "File originale": snap["name"],
-                    "Nuovo nome": target_name,
-                    "Destinazione": INBOX_PATH,
-                    "Esito": "GIÀ CORRETTO NEL TEST",
-                })
-                continue
-
-            if dest["parent_id"] == TEST_INBOX_ID:
-                updated = drive.files().update(
-                    fileId=file_id,
-                    body={"name": target_name},
-                    fields="id,name,parents,modifiedTime",
-                    supportsAllDrives=True,
-                ).execute()
-                if (
-                    updated.get("name") != target_name
-                    or TEST_INBOX_ID not in updated.get("parents", [])
-                ):
-                    raise EsecuzioneTestBloccata(
-                        "Google Drive non ha confermato la rinomina TEST."
-                    )
-                completed.append({
-                    "id": file_id,
-                    "target_parent": TEST_INBOX_ID,
-                    "moved": False,
-                })
-                results.append({
-                    "File originale": snap["name"],
-                    "Nuovo nome": target_name,
-                    "Destinazione": INBOX_PATH,
-                    "Esito": "RINOMINATO NEL TEST",
-                })
-            else:
-                updated = drive.files().update(
-                    fileId=file_id,
-                    addParents=dest["parent_id"],
-                    removeParents=TEST_INBOX_ID,
-                    body={"name": target_name},
-                    fields="id,name,parents,modifiedTime",
-                    supportsAllDrives=True,
-                ).execute()
-                if (
-                    updated.get("name") != target_name
-                    or dest["parent_id"] not in updated.get("parents", [])
-                    or TEST_INBOX_ID in updated.get("parents", [])
-                ):
-                    raise EsecuzioneTestBloccata(
-                        "Google Drive non ha confermato lo spostamento TEST."
-                    )
-                completed.append({
-                    "id": file_id,
-                    "target_parent": dest["parent_id"],
-                    "moved": True,
-                })
-                results.append({
-                    "File originale": snap["name"],
-                    "Nuovo nome": target_name,
-                    "Destinazione": row["Destinazione"],
-                    "Esito": "SPOSTATO NEL TEST",
-                })
-
-    except Exception as exc:
-        rollback_failed = []
-        for item in reversed(completed):
-            snap = snapshots[item["id"]]
-            try:
-                if item["moved"]:
-                    restored = drive.files().update(
-                        fileId=item["id"],
-                        addParents=TEST_INBOX_ID,
-                        removeParents=item["target_parent"],
-                        body={"name": snap["name"]},
-                        fields="id,name,parents",
-                        supportsAllDrives=True,
-                    ).execute()
-                    ok = (
-                        restored.get("name") == snap["name"]
-                        and TEST_INBOX_ID in restored.get("parents", [])
-                    )
-                else:
-                    restored = drive.files().update(
-                        fileId=item["id"],
-                        body={"name": snap["name"]},
-                        fields="id,name,parents",
-                        supportsAllDrives=True,
-                    ).execute()
-                    ok = (
-                        restored.get("name") == snap["name"]
-                        and TEST_INBOX_ID in restored.get("parents", [])
-                    )
-                if not ok:
-                    rollback_failed.append(snap["name"])
-            except Exception:
-                rollback_failed.append(snap["name"])
-
-        folder_cleanup_failed = _cleanup_empty_created_folders(
-            drive, created_folders
-        )
-        if rollback_failed or folder_cleanup_failed:
-            details = []
-            if rollback_failed:
-                details.append(
-                    "file da controllare: " + ", ".join(rollback_failed)
-                )
-            if folder_cleanup_failed:
-                details.append(
-                    "cartelle anno TEST da controllare: "
-                    + ", ".join(folder_cleanup_failed)
-                )
+        batch_id = _batch_id(snapshot)
+        if _receipt_exists(drive, control["id"], batch_id):
             raise EsecuzioneTestBloccata(
-                "Errore durante il lotto TEST e rollback incompleto; "
-                + "; ".join(details)
+                "Questo identico lotto risulta già completato in precedenza."
+            )
+
+        current_files = carica_pdf_test(drive)
+        _revalidate_source_set(current_files, snapshot)
+
+        fresh_plan = _fresh_plan(drive, current_files, aliases or {})
+        _compare_plans(snapshot, fresh_plan)
+        _validate_actionable_plan(fresh_plan)
+
+        resolved = _preflight_targets(drive, fresh_plan)
+
+        snapshots = {s["id"]: s for s in snapshot}
+        rows_by_id = {r["_file_id"]: r for r in fresh_plan}
+
+        created_folders = []
+        completed = []
+        results = []
+        try:
+            created_folders = _ensure_year_folders(drive, resolved)
+
+            for file_id, row in rows_by_id.items():
+                dest = resolved[file_id]
+                _check_target_still_free(
+                    drive,
+                    dest["parent_id"],
+                    row["Nuovo nome"],
+                    file_id,
+                )
+
+            ordered_ids = sorted(
+                rows_by_id,
+                key=lambda file_id: (
+                    0 if rows_by_id[file_id]["Tipo"] == "ordine" else
+                    1 if rows_by_id[file_id]["Tipo"] == "conferma" else 2,
+                    rows_by_id[file_id]["Cliente"],
+                    rows_by_id[file_id]["File originale"],
+                ),
+            )
+
+            for file_id in ordered_ids:
+                snap = snapshots[file_id]
+                row = rows_by_id[file_id]
+                dest = resolved[file_id]
+                target_name = row["Nuovo nome"]
+
+                _revalidate_single_source(drive, snap)
+                _check_target_still_free(
+                    drive,
+                    dest["parent_id"],
+                    target_name,
+                    file_id,
+                )
+
+                if dest["parent_id"] == TEST_INBOX_ID and snap["name"] == target_name:
+                    results.append({
+                        "File originale": snap["name"],
+                        "Nuovo nome": target_name,
+                        "Destinazione": INBOX_PATH,
+                        "Esito": "GIÀ CORRETTO NEL TEST",
+                    })
+                    continue
+
+                if dest["parent_id"] == TEST_INBOX_ID:
+                    updated = drive.files().update(
+                        fileId=file_id,
+                        body={"name": target_name},
+                        fields="id,name,parents,modifiedTime",
+                        supportsAllDrives=True,
+                    ).execute()
+                    if (
+                        updated.get("name") != target_name
+                        or TEST_INBOX_ID not in updated.get("parents", [])
+                    ):
+                        raise EsecuzioneTestBloccata(
+                            "Google Drive non ha confermato la rinomina TEST."
+                        )
+                    completed.append({
+                        "id": file_id,
+                        "target_parent": TEST_INBOX_ID,
+                        "moved": False,
+                    })
+                    results.append({
+                        "File originale": snap["name"],
+                        "Nuovo nome": target_name,
+                        "Destinazione": INBOX_PATH,
+                        "Esito": "RINOMINATO NEL TEST",
+                    })
+                else:
+                    updated = drive.files().update(
+                        fileId=file_id,
+                        addParents=dest["parent_id"],
+                        removeParents=TEST_INBOX_ID,
+                        body={"name": target_name},
+                        fields="id,name,parents,modifiedTime",
+                        supportsAllDrives=True,
+                    ).execute()
+                    if (
+                        updated.get("name") != target_name
+                        or dest["parent_id"] not in updated.get("parents", [])
+                        or TEST_INBOX_ID in updated.get("parents", [])
+                    ):
+                        raise EsecuzioneTestBloccata(
+                            "Google Drive non ha confermato lo spostamento TEST."
+                        )
+                    completed.append({
+                        "id": file_id,
+                        "target_parent": dest["parent_id"],
+                        "moved": True,
+                    })
+                    results.append({
+                        "File originale": snap["name"],
+                        "Nuovo nome": target_name,
+                        "Destinazione": row["Destinazione"],
+                        "Esito": "SPOSTATO NEL TEST",
+                    })
+
+            # La ricevuta fa parte del commit logico: se non può essere creata,
+            # il lotto viene riportato indietro.
+            _create_receipt(
+                drive,
+                control["id"],
+                batch_id,
+                len(results),
+            )
+
+        except Exception as exc:
+            rollback_failed = []
+            for item in reversed(completed):
+                snap = snapshots[item["id"]]
+                try:
+                    if item["moved"]:
+                        restored = drive.files().update(
+                            fileId=item["id"],
+                            addParents=TEST_INBOX_ID,
+                            removeParents=item["target_parent"],
+                            body={"name": snap["name"]},
+                            fields="id,name,parents",
+                            supportsAllDrives=True,
+                        ).execute()
+                        ok = (
+                            restored.get("name") == snap["name"]
+                            and TEST_INBOX_ID in restored.get("parents", [])
+                        )
+                    else:
+                        restored = drive.files().update(
+                            fileId=item["id"],
+                            body={"name": snap["name"]},
+                            fields="id,name,parents",
+                            supportsAllDrives=True,
+                        ).execute()
+                        ok = (
+                            restored.get("name") == snap["name"]
+                            and TEST_INBOX_ID in restored.get("parents", [])
+                        )
+                    if not ok:
+                        rollback_failed.append(snap["name"])
+                except Exception:
+                    rollback_failed.append(snap["name"])
+
+            folder_cleanup_failed = _cleanup_empty_created_folders(
+                drive, created_folders
+            )
+            if rollback_failed or folder_cleanup_failed:
+                details = []
+                if rollback_failed:
+                    details.append(
+                        "file da controllare: " + ", ".join(rollback_failed)
+                    )
+                if folder_cleanup_failed:
+                    details.append(
+                        "cartelle anno TEST da controllare: "
+                        + ", ".join(folder_cleanup_failed)
+                    )
+                raise EsecuzioneTestBloccata(
+                    "Errore durante il lotto TEST e rollback incompleto; "
+                    + "; ".join(details)
+                ) from exc
+
+            if isinstance(exc, EsecuzioneTestBloccata):
+                raise
+            raise EsecuzioneTestBloccata(
+                "Lotto TEST non completato; le modifiche già eseguite sono state ripristinate."
             ) from exc
 
-        raise EsecuzioneTestBloccata(
-            "Lotto TEST non completato; le modifiche già eseguite sono state ripristinate."
-        ) from exc
-
-    return results
+        return results
+    finally:
+        _release_drive_lock(drive, lock_id)
