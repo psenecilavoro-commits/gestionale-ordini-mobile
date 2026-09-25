@@ -82,6 +82,56 @@ def make_snapshot(file_memoria, docs, piano):
     return sorted(snapshot, key=lambda x: x["id"])
 
 
+def _canonical_plan_row(row):
+    return {
+        "_file_id": row.get("_file_id", ""),
+        "File originale": row.get("File originale", ""),
+        "Tipo": row.get("Tipo", ""),
+        "Cliente": row.get("Cliente", ""),
+        "Data": row.get("Data", ""),
+        "N. ordine": row.get("N. ordine", ""),
+        "N. conferma Innova": row.get("N. conferma Innova", ""),
+        "Nuovo nome": row.get("Nuovo nome", ""),
+        "Destinazione": row.get("Destinazione", ""),
+        "Esito": row.get("Esito", ""),
+        "Motivo": row.get("Motivo", ""),
+    }
+
+
+def make_snapshot(file_memoria, docs, piano):
+    """Congela metadati, hash e piano mostrato nell'anteprima REALE."""
+    rows_by_id = {}
+    for row in piano:
+        file_id = row.get("_file_id", "")
+        if not file_id or file_id in rows_by_id:
+            raise EsecuzioneRealeBloccata(
+                "Piano V4 privo di identificazione univoca dei file."
+            )
+        rows_by_id[file_id] = _canonical_plan_row(row)
+
+    docs_by_id = {d.file_id: d for d in docs}
+    snapshot = []
+    for info, content in file_memoria:
+        file_id = info["id"]
+        row = rows_by_id.get(file_id)
+        doc = docs_by_id.get(file_id)
+        if row is None or doc is None:
+            raise EsecuzioneRealeBloccata(
+                "Anteprima incoerente: impossibile creare lo snapshot."
+            )
+        snapshot.append({
+            "id": file_id,
+            "name": info.get("name", ""),
+            "parents": list(info.get("parents", [])),
+            "size": str(info.get("size") or ""),
+            "md5Checksum": info.get("md5Checksum") or "",
+            "modifiedTime": info.get("modifiedTime") or "",
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "plan": row,
+        })
+    return sorted(snapshot, key=lambda x: x["id"])
+
+
 def _get_meta(drive, file_id, fields="id,name,mimeType,parents,size,md5Checksum,modifiedTime"):
     return drive.files().get(
         fileId=file_id,
