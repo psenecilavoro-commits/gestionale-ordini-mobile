@@ -1,0 +1,43 @@
+name: Build offline Gestionale Ordini
+
+on:
+  push:
+    branches:
+      - offline-build-2026-09-25
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Static syntax check
+        run: |
+          python -m py_compile             app_ordini.py             database.py             clienti_monitoraggio.py             calendar_service.py             pdf_import.py             previsionale.py             stile.py             pages/Archivio_Innova.py             innova_drive_modes.py             innova_drive_readonly.py             innova_drive_execute_test.py             innova_drive_execute_real.py             innova_v4_cloud_full.py
+
+      - name: Prepare distributable folder
+        run: |
+          mkdir -p build/Gestionale_Ordini_PC_Offline
+          rsync -a ./ build/Gestionale_Ordini_PC_Offline/             --exclude '.git'             --exclude '.github'             --exclude 'build'             --exclude 'app_mobile.py'             --exclude '__pycache__'             --exclude '*.pyc'
+          rm -f build/Gestionale_Ordini_PC_Offline/innova_drive_preview.py
+          rm -f build/Gestionale_Ordini_PC_Offline/innova_v4_cloud_preview.py
+          rm -rf build/Gestionale_Ordini_PC_Offline/docs
+          rm -rf build/Gestionale_Ordini_PC_Offline/tools
+
+      - name: Create ZIP
+        run: |
+          cd build
+          zip -r Gestionale_Ordini_PC_offline_distribuibile_2026-09-25.zip Gestionale_Ordini_PC_Offline
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Gestionale_Ordini_PC_offline_distribuibile_2026-09-25
+          path: build/Gestionale_Ordini_PC_offline_distribuibile_2026-09-25.zip
+          if-no-files-found: error
+          retention-days: 7
