@@ -1,7 +1,6 @@
 streamlit
 pandas
 pdfplumber
-supabase
 plotly
 openpyxl
 rapidfuzz
