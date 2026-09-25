@@ -20,6 +20,7 @@ from innova_drive_execute_test import make_snapshot
 from innova_drive_execute_real import (
     EsecuzioneRealeBloccata,
     execute_real_group,
+    execute_real_all,
 )
 
 
@@ -236,6 +237,68 @@ if piano is not None:
         )
 
     if gruppi and runtime.writes_enabled:
+        st.divider()
+        st.subheader("Archivia tutti")
+        totale_documenti = sum(len(item["file_ids"]) for item in gruppi)
+        st.caption(
+            f"Archivia in un solo passaggio tutti i {len(gruppi)} gruppi conformi "
+            f"alle regole V4 ({totale_documenti} documenti). "
+            "Eventuali anomalie restano escluse e non vengono modificate."
+        )
+
+        conferma_tutti = st.checkbox(
+            "Confermo di voler archiviare tutti i gruppi conformi mostrati nell'anteprima",
+            key="innova_real_all_confirm_checkbox",
+        )
+        frase_tutti = st.text_input(
+            'Per abilitare il pulsante scrivi esattamente: ARCHIVIA TUTTI',
+            key="innova_real_all_confirm_text",
+        )
+        enabled_tutti = (
+            conferma_tutti
+            and frase_tutti.strip() == "ARCHIVIA TUTTI"
+        )
+
+        if st.button(
+            "Archivia tutti",
+            type="primary",
+            disabled=not enabled_tutti,
+            key="innova_real_execute_all",
+        ):
+            try:
+                with st.spinner(
+                    "Rivalidazione completa e archiviazione di tutti i gruppi conformi…"
+                ):
+                    servizio = _servizio_drive()
+                    risultati = execute_real_all(
+                        servizio,
+                        runtime,
+                        snapshot,
+                        _alias_clienti(),
+                    )
+
+                st.session_state.innova_real_last_execution = risultati
+                st.session_state.innova_real_preview_rows = None
+                st.session_state.innova_real_snapshot = None
+                st.session_state.innova_real_client_count = None
+                st.session_state.innova_real_file_count = None
+
+                st.success(
+                    f"Archiviazione completa: {len(risultati)} documenti gestiti."
+                )
+                st.dataframe(
+                    risultati,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            except EsecuzioneRealeBloccata as exc:
+                st.error(str(exc))
+            except Exception:
+                st.error(
+                    "Errore durante Archivia tutti. "
+                    "Controllare manualmente Google Drive prima di riprovare."
+                )
+
         st.divider()
         st.subheader("Esegui un gruppo")
 
