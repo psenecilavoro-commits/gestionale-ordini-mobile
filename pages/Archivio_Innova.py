@@ -16,9 +16,9 @@ from innova_drive_readonly import (
     map_archive,
     verify_runtime,
 )
-from innova_drive_execute_test import make_snapshot
 from innova_drive_execute_real import (
     EsecuzioneRealeBloccata,
+    make_snapshot,
     execute_real_group,
     execute_real_all,
 )
