@@ -815,3 +815,269 @@ def execute_real_group(drive, runtime, snapshot, selected_ids, aliases=None):
         return results
     finally:
         _release_lock(drive, lock_id)
+
+
+
+def _all_executable_groups(fresh_plan):
+    """Restituisce tutti e soli i gruppi V4 eseguibili.
+
+    Le anomalie restano escluse. Se una riga apparentemente eseguibile appartiene
+    a un gruppo incoerente, blocchiamo l'intero batch prima di qualsiasi write.
+    """
+    allowed = {"ANTEPRIMA SPOSTA", "ANTEPRIMA RINOMINA"}
+    grouped = defaultdict(list)
+    for row in fresh_plan:
+        gid = row.get("_group_id", "")
+        if gid:
+            grouped[gid].append(row)
+
+    selected_rows = []
+    selected_ids = []
+    for gid, rows in grouped.items():
+        if any(row.get("Esito") not in allowed for row in rows):
+            continue
+        ids = [row.get("_file_id") for row in rows]
+        if not all(ids):
+            raise EsecuzioneRealeBloccata(
+                "Piano V4 con gruppo eseguibile privo di identificazione file."
+            )
+        validated = _validate_selected_group(fresh_plan, ids)
+        selected_rows.extend(validated)
+        selected_ids.extend(ids)
+
+    if not selected_rows:
+        raise EsecuzioneRealeBloccata(
+            "Nessun gruppo conforme alle regole è disponibile per Archivia tutti."
+        )
+
+    return selected_rows, selected_ids
+
+
+def execute_real_all(drive, runtime, snapshot, aliases=None):
+    """Archivia in un solo lotto tutti i gruppi V4 attualmente eseguibili.
+
+    Le righe in ANOMALIA o comunque non eseguibili vengono ignorate. L'intero
+    lotto conforme viene rivalidato e preflightato prima di spostare/rinominare
+    qualsiasi PDF. Se un controllo fallisce, nessun PDF del lotto viene toccato.
+    """
+    try:
+        assert_real_writes_explicitly_enabled(runtime)
+    except Exception as exc:
+        raise EsecuzioneRealeBloccata(str(exc)) from exc
+
+    verify_runtime(drive, runtime)
+    control = _ensure_control_folder(drive, runtime)
+    lock_id = None
+
+    try:
+        lock_id = _acquire_lock(drive, control["id"])
+
+        current_files = load_pdf_inbox(drive, runtime)
+        _revalidate_full_snapshot(current_files, snapshot, runtime.inbox_id)
+
+        fresh_plan = _fresh_plan(
+            drive,
+            runtime,
+            current_files,
+            aliases or {},
+        )
+        _compare_full_plan(snapshot, fresh_plan)
+
+        selected_rows, selected_ids = _all_executable_groups(fresh_plan)
+
+        batch_id = _batch_id(snapshot, selected_ids)
+        if _receipt_exists(drive, control["id"], batch_id):
+            raise EsecuzioneRealeBloccata(
+                "Questo identico lotto ARCHIVIA TUTTI risulta già completato."
+            )
+
+        # Preflight dell'intero lotto prima di muovere/rinominare PDF.
+        resolved = _preflight(drive, runtime, selected_rows)
+        _check_duplicate_hashes(
+            drive,
+            selected_rows,
+            resolved,
+            snapshot,
+        )
+
+        snapshots = {snap["id"]: snap for snap in snapshot}
+        created_folders = []
+        completed = []
+        results = []
+
+        try:
+            # Le sole write che possono precedere i PDF sono eventuali cartelle anno
+            # mancanti; se un controllo successivo fallisce vengono rimosse se vuote.
+            created_folders = _ensure_year_folders(drive, resolved)
+
+            # Ultimo preflight globale dopo la risoluzione/creazione delle cartelle.
+            _check_duplicate_hashes(
+                drive,
+                selected_rows,
+                resolved,
+                snapshot,
+            )
+            for row in selected_rows:
+                dest = resolved[row["_file_id"]]
+                _check_target_free(
+                    drive,
+                    dest["parent_id"],
+                    row["Nuovo nome"],
+                    row["_file_id"],
+                )
+
+            ordered = sorted(
+                selected_rows,
+                key=lambda row: (
+                    row.get("_group_id", ""),
+                    0 if row["Tipo"] == "ordine" else
+                    1 if row["Tipo"] == "conferma" else 2,
+                    row["File originale"],
+                ),
+            )
+
+            for row in ordered:
+                file_id = row["_file_id"]
+                snap = snapshots[file_id]
+                dest = resolved[file_id]
+                target_name = row["Nuovo nome"]
+
+                # Race protection immediatamente prima della singola write.
+                _revalidate_source_meta(drive, runtime, snap)
+                _check_target_free(
+                    drive,
+                    dest["parent_id"],
+                    target_name,
+                    file_id,
+                )
+
+                if dest["parent_id"] == runtime.inbox_id:
+                    if snap["name"] == target_name:
+                        results.append({
+                            "File originale": snap["name"],
+                            "Nuovo nome": target_name,
+                            "Destinazione": row["Destinazione"],
+                            "Esito": "GIÀ CORRETTO",
+                        })
+                        continue
+
+                    updated = drive.files().update(
+                        fileId=file_id,
+                        body={"name": target_name},
+                        fields="id,name,parents,modifiedTime",
+                        supportsAllDrives=True,
+                    ).execute()
+                    if (
+                        updated.get("name") != target_name
+                        or runtime.inbox_id not in updated.get("parents", [])
+                    ):
+                        raise EsecuzioneRealeBloccata(
+                            "Google Drive non ha confermato una rinomina del lotto."
+                        )
+                    completed.append({
+                        "id": file_id,
+                        "moved": False,
+                        "target_parent": runtime.inbox_id,
+                    })
+                    results.append({
+                        "File originale": snap["name"],
+                        "Nuovo nome": target_name,
+                        "Destinazione": row["Destinazione"],
+                        "Esito": "RINOMINATO",
+                    })
+                else:
+                    updated = drive.files().update(
+                        fileId=file_id,
+                        addParents=dest["parent_id"],
+                        removeParents=runtime.inbox_id,
+                        body={"name": target_name},
+                        fields="id,name,parents,modifiedTime",
+                        supportsAllDrives=True,
+                    ).execute()
+                    if (
+                        updated.get("name") != target_name
+                        or dest["parent_id"] not in updated.get("parents", [])
+                        or runtime.inbox_id in updated.get("parents", [])
+                    ):
+                        raise EsecuzioneRealeBloccata(
+                            "Google Drive non ha confermato uno spostamento del lotto."
+                        )
+                    completed.append({
+                        "id": file_id,
+                        "moved": True,
+                        "target_parent": dest["parent_id"],
+                    })
+                    results.append({
+                        "File originale": snap["name"],
+                        "Nuovo nome": target_name,
+                        "Destinazione": row["Destinazione"],
+                        "Esito": "SPOSTATO",
+                    })
+
+            _create_receipt(
+                drive,
+                control["id"],
+                batch_id,
+                len(results),
+            )
+
+        except Exception as exc:
+            rollback_failed = []
+            for item in reversed(completed):
+                snap = snapshots[item["id"]]
+                try:
+                    if item["moved"]:
+                        restored = drive.files().update(
+                            fileId=item["id"],
+                            addParents=runtime.inbox_id,
+                            removeParents=item["target_parent"],
+                            body={"name": snap["name"]},
+                            fields="id,name,parents",
+                            supportsAllDrives=True,
+                        ).execute()
+                    else:
+                        restored = drive.files().update(
+                            fileId=item["id"],
+                            body={"name": snap["name"]},
+                            fields="id,name,parents",
+                            supportsAllDrives=True,
+                        ).execute()
+
+                    if (
+                        restored.get("name") != snap["name"]
+                        or runtime.inbox_id not in restored.get("parents", [])
+                    ):
+                        rollback_failed.append(snap["name"])
+                except Exception:
+                    rollback_failed.append(snap["name"])
+
+            folder_cleanup_failed = _cleanup_empty_folders(
+                drive,
+                created_folders,
+            )
+            if rollback_failed or folder_cleanup_failed:
+                details = []
+                if rollback_failed:
+                    details.append(
+                        "file da controllare: " + ", ".join(rollback_failed)
+                    )
+                if folder_cleanup_failed:
+                    details.append(
+                        "cartelle anno da controllare: "
+                        + ", ".join(folder_cleanup_failed)
+                    )
+                raise EsecuzioneRealeBloccata(
+                    "Errore durante ARCHIVIA TUTTI e rollback incompleto; "
+                    + "; ".join(details)
+                ) from exc
+
+            if isinstance(exc, EsecuzioneRealeBloccata):
+                raise
+            raise EsecuzioneRealeBloccata(
+                "ARCHIVIA TUTTI non completato; le modifiche già eseguite "
+                "sono state ripristinate."
+            ) from exc
+
+        return results
+    finally:
+        _release_lock(drive, lock_id)
