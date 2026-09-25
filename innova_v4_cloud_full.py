@@ -86,6 +86,24 @@ def identify_kind(text: str) -> str:
             "inserire il seguente ordine",
         )):
             return "ordine"
+
+        # Risposte cliente che autorizzano esplicitamente a procedere.
+        # Richiediamo sia una formula di approvazione nel messaggio più recente
+        # sia, nella conversazione quotata, una richiesta esplicita di conferma/
+        # autorizzazione a mandare avanti. Evita di trattare un semplice "ok"
+        # isolato come ordine.
+        if re.search(
+            r"\b(?:ok\s+confermato|confermo|confermato|va\s+bene)\b",
+            opening,
+            re.I,
+        ) and re.search(
+            r"(?:attendo\s+(?:tuo|tua|vostro|vostra|vs)\s+ok\s+per\s+mandare\s+avanti|"
+            r"attendo\s+(?:tuo|tua|vostra|vs)\s+conferma|"
+            r"attendo\s+conferma\s+per\s+procedere)",
+            opening,
+            re.I,
+        ):
+            return "ordine"
         first = re.split(r"\n\s*(?:Da\s*:|Inviato\s*:)", text[:5000], maxsplit=1, flags=re.I)[0]
         msg = normalize(first)
         if any(x in msg for x in (
@@ -192,6 +210,16 @@ def find_date(text: str, kind: str, modified_time: str = "") -> datetime | None:
 def find_number(text: str, kind: str) -> tuple[str, str]:
     head = text[:6000]
     if kind == "ordine":
+        # Layout TRISMOKA: "OM ORDINE MATERIE PRIME 6 25/09/26 1".
+        m = re.search(
+            r"\bOM\s+ORDINE\s+MATERIE\s+PRIME\s+(\d{1,8})\s+"
+            r"\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b",
+            head[:1200],
+            re.I,
+        )
+        if m:
+            return str(int(m.group(1))), ""
+
         m = re.search(r"N\s*[°ºo.]?\s*ordine\s+di\s+acquisto\s*(OA\s*[-/]\s*\d{2}\s*[-/]\s*\d{1,10})\b", head, re.I)
         if m:
             return str(int(re.split(r"[-/]", m.group(1))[-1].strip())), ""
@@ -319,10 +347,21 @@ def resolve_client(text: str, client_names: list[str], aliases: dict | None = No
             return matched[0]
 
     t = normalize(text[:8000])
+    t_compact = re.sub(r"[^a-z0-9]", "", t)
     candidates = []
     for name in client_names:
         variants = [clean_company(name)] + [normalize(v) for v in aliases.get(name, [])]
-        if any(len(v) >= 5 and re.search(r"(?<!\w)" + re.escape(v) + r"(?!\w)", t) for v in variants):
+        exact_match = any(
+            len(v) >= 5
+            and re.search(r"(?<!\w)" + re.escape(v) + r"(?!\w)", t)
+            for v in variants
+        )
+        compact_match = any(
+            len(compact := re.sub(r"[^a-z0-9]", "", v)) >= 8
+            and compact in t_compact
+            for v in variants
+        )
+        if exact_match or compact_match:
             candidates.append(name)
     if len(candidates) == 1:
         return candidates[0]
@@ -424,17 +463,40 @@ def inspect_cloud(file_info: dict, content: bytes, client_names: list[str], alia
 
 
 def shared_distinctive_reference(order: CloudDoc, confirmation: CloudDoc) -> bool:
-    """Abbina senza numero solo con una referenza merceologica condivisa.
+    """Abbina senza numero solo con evidenza documentale forte.
 
-    Cliente e data uguali NON bastano. Il chiamante richiede inoltre un
-    candidato univoco per ciascun lato.
+    Cliente e data uguali NON bastano mai. Il chiamante richiede inoltre un
+    candidato univoco per ciascun lato. Sono ammesse:
+    - una referenza merceologica condivisa;
+    - una risposta cliente esplicita di approvazione, legata nella stessa
+      email a una richiesta di autorizzazione a procedere.
     """
     if not order.date or not confirmation.date or order.date.date() != confirmation.date.date():
         return False
-    if "outlook" not in normalize(order.text[:150]):
-        return False
 
     order_text = normalize(order.text[:9000])
+    emailish = (
+        "outlook" in normalize(order.text[:150])
+        or ("da " in normalize(order.text[:350]) and "inviato" in order_text)
+    )
+    if not emailish:
+        return False
+
+    # Caso reale Ala Carni: risposta cliente "ok confermato" a una mail che
+    # chiede esplicitamente l'ok per mandare avanti. La coppia viene comunque
+    # accettata solo se è univoca per cliente/data nel piano.
+    if re.search(
+        r"\b(?:ok\s+confermato|confermo|confermato|va\s+bene)\b",
+        order_text[:2200],
+        re.I,
+    ) and re.search(
+        r"(?:attendo\s+(?:tuo|tua|vostro|vostra|vs)\s+ok\s+per\s+mandare\s+avanti|"
+        r"attendo\s+(?:tuo|tua|vostra|vs)\s+conferma|"
+        r"attendo\s+conferma\s+per\s+procedere)",
+        order_text[:4500],
+        re.I,
+    ):
+        return True
 
     # Nella conferma consideriamo soprattutto la sezione articoli, evitando
     # che indirizzo/firma del cliente diventino falsi "riferimenti comuni".
