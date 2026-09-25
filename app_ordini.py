@@ -14,6 +14,7 @@ from pdf_import import (
     classifica_righe_importazione,
 )
 import previsionale as previsionale_module
+from stile import applica_stile, mostra_navigazione
 
 VERSIONE_MODULO_PREVISIONALE_ATTESA = "6H"
 
@@ -23,30 +24,8 @@ if getattr(previsionale_module, "VERSIONE_PREVISIONALE", None) != VERSIONE_MODUL
 calcola_previsionale = previsionale_module.calcola_previsionale
 
 st.set_page_config(page_title="Gestionale ordini", layout="wide")
-
-# Pulsanti primari: azzurro chiaro al posto del tema rosso.
-# Solo stile visivo; nessun cambiamento ai click o alle operazioni.
-st.markdown("""
-<style>
-button[kind="primary"],
-button[data-testid="stBaseButton-primary"] {
-    background-color: #DCEEFF !important;
-    color: #183B58 !important;
-    border: 1px solid #9FC8EC !important;
-}
-button[kind="primary"]:hover,
-button[data-testid="stBaseButton-primary"]:hover {
-    background-color: #C5E4FC !important;
-    color: #12324C !important;
-    border-color: #74B3E5 !important;
-}
-button[kind="primary"]:focus-visible,
-button[data-testid="stBaseButton-primary"]:focus-visible {
-    outline: 2px solid #357FB7 !important;
-    outline-offset: 2px;
-}
-</style>
-""", unsafe_allow_html=True)
+applica_stile()
+mostra_navigazione()
 
 # ---------------------------------------------------------
 # SISTEMA DI AUTENTICAZIONE PASSWORD
