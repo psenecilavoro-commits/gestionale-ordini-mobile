@@ -1,0 +1,127 @@
+GESTIONALE ORDINI - COPIA PC LOCALE DISTRIBUIBILE
+Aggiornata al 25/09/2026
+
+============================================================
+1. COSA CONTIENE
+============================================================
+
+Questa copia riprende le ultime modifiche del Gestionale Ordini:
+- Database
+- Analisi
+- Gestione articoli
+- Previsionale
+- Monitoraggio
+- nuova navigazione laterale: Database / Automazione
+- nuova grafica blu pastello coerente con Gestionale Partita IVA
+- pulsanti Excel e funzioni recenti
+- articoli obsoleti in Analisi
+- export listino cliente con selezione multipla anni
+- clienti manuali nel Monitoraggio
+- Automazione Archivio Innova con anteprima, singolo gruppo e Archivia tutti
+- parser V4, OCR, lock, idempotenza, collision check, rivalidazione e rollback
+
+La copia NON contiene:
+- ordini o altri dati dell'app online
+- database gia' compilati
+- password
+- chiavi Supabase
+- credenziali Google
+- token OAuth
+- segreti personali
+
+Ogni PC parte con un database SQLite vuoto e indipendente.
+
+============================================================
+2. REQUISITI
+============================================================
+
+Consigliato: Windows 10/11 con Python 3.11 o 3.12.
+
+Al primo avvio serve Internet SOLO per installare automaticamente le
+librerie Python. Dopo l'installazione, le funzioni Database / Analisi /
+Gestione articoli / Previsionale lavorano con il database locale.
+
+Per Google Calendar e per Automazione Archivio Innova serve Internet
+durante l'utilizzo e servono credenziali Google configurate localmente.
+
+Per leggere PDF scansiti nell'Automazione puo' servire Tesseract OCR.
+Se non e' installato, i PDF con testo digitale continuano a essere leggibili,
+mentre i PDF solo immagine potrebbero non essere riconosciuti.
+
+============================================================
+3. AVVIO
+============================================================
+
+1. Estrai completamente lo ZIP in una cartella del PC.
+2. Non avviare il programma direttamente dallo ZIP.
+3. Fai doppio clic su:
+       AVVIA_GESTIONALE.bat
+4. Al primo avvio attendi l'installazione delle librerie.
+5. Si aprira' Streamlit nel browser.
+
+Il database viene creato automaticamente in:
+       dati\gestionale_ordini.sqlite
+
+============================================================
+4. DATI LOCALI
+============================================================
+
+Tutti i dati inseriti nella parte Database vengono salvati solo sul PC.
+Nessun dato viene inviato a Supabase.
+
+Se copi questa cartella su un secondo PC, quel PC avra' un database
+indipendente.
+
+Per tornare a una copia vergine puoi usare:
+       RESET_DATI_LOCALE.bat
+
+ATTENZIONE: il reset cancella definitivamente i dati locali di quel PC.
+
+============================================================
+5. GOOGLE CALENDAR - FACOLTATIVO
+============================================================
+
+La scheda Monitoraggio funziona anche senza Google Calendar per le
+funzioni basate sui dati locali.
+
+La scansione delle visite Google Calendar richiede una configurazione
+Google dedicata e Internet. Nessuna credenziale e' inclusa nel pacchetto.
+
+============================================================
+6. AUTOMAZIONE ARCHIVIO INNOVA - FACOLTATIVA
+============================================================
+
+La voce laterale Automazione contiene la versione aggiornata del bot
+Archivio Innova, inclusa la funzione "Archivia tutti".
+
+Questa funzione NON e' offline: lavora su Google Drive e quindi richiede:
+- Internet
+- OAuth Google Drive
+- configurazione delle cartelle Drive
+- file .streamlit\secrets.toml compilato LOCALMENTE
+
+Il pacchetto contiene soltanto un file secrets.toml vuoto/commentato.
+NON inserire credenziali in copie destinate ad altre persone.
+
+Per sicurezza:
+- partire sempre con writes_enabled = false
+- verificare l'anteprima
+- attivare writes_enabled = true solo sul PC autorizzato
+- non condividere client_secret o refresh_token
+
+============================================================
+7. NOTA SULLA VERSIONE MOBILE
+============================================================
+
+app_mobile.py non fa parte della copia PC offline distribuibile.
+La copia locale e' pensata per PC.
+
+============================================================
+8. AGGIORNAMENTO
+============================================================
+
+Questa copia e' stata generata dal codice principale aggiornato al
+25 settembre 2026, dopo il collaudo della funzione Archivia tutti e
+della nuova grafica/navigazione.
+
+============================================================
