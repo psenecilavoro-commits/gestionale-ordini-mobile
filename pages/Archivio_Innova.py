@@ -22,9 +22,12 @@ from innova_drive_execute_real import (
     execute_real_group,
     execute_real_all,
 )
+from stile import applica_stile, mostra_navigazione
 
 
 st.set_page_config(page_title="Archivio Innova", layout="wide")
+applica_stile()
+mostra_navigazione()
 
 if not st.session_state.get("autenticato", False):
     st.warning("Accedi prima al Gestionale Ordini.")
