@@ -29,15 +29,10 @@ st.set_page_config(page_title="Archivio Innova", layout="wide")
 applica_stile()
 mostra_navigazione()
 
-if not st.session_state.get("autenticato", False):
-    st.warning("Accedi prima al Gestionale Ordini.")
-    if st.button("Vai al Gestionale Ordini"):
-        st.switch_page("app_ordini.py")
-    st.stop()
-
 st.title("Archivio Innova")
 st.caption(
-    "Analizza i documenti presenti nella cartella di ingresso e archivia un solo gruppo per volta."
+    "Automazione Google Drive. Richiede Internet e credenziali OAuth locali; "
+    "la parte Database del gestionale resta indipendente e locale."
 )
 
 
