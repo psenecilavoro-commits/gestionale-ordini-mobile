@@ -27,34 +27,8 @@ st.set_page_config(page_title="Gestionale ordini", layout="wide")
 applica_stile()
 mostra_navigazione()
 
-# ---------------------------------------------------------
-# SISTEMA DI AUTENTICAZIONE PASSWORD
-# ---------------------------------------------------------
-APP_PASSWORD = st.secrets["app"]["password"]
-
-def verifica_password():
-    if "autenticato" not in st.session_state:
-        st.session_state.autenticato = False
-
-    if not st.session_state.autenticato:
-        st.title("🔒 Accesso Riservato")
-        st.subheader("Gestionale ordini")
-        
-        pwd_input = st.text_input("Inserisci la password di accesso:", type="password", key="login_pwd_input")
-        btn_login = st.button("Accedi", type="primary")
-
-        if btn_login:
-            if pwd_input == APP_PASSWORD:
-                st.session_state.autenticato = True
-                st.success("Accesso effettuato!")
-                st.rerun()
-            else:
-                st.error("Password errata. Riprova.")
-        return False
-    return True
-
-if not verifica_password():
-    st.stop()
+# Copia PC locale: nessuna password e nessun account cloud richiesto.
+st.session_state.autenticato = True
 
 from database import (
     supabase,
@@ -175,19 +149,13 @@ def calcola_previsionale_cached(df_ordini, giorno_cache, versione_cache):
 # ---------------------------------------------------------
 # INTERFACCIA STREAMLIT A TABS (5 SCHEDE)
 # ---------------------------------------------------------
-col_h1, col_h2 = st.columns([5, 1])
-with col_h1:
-    st.title("Gestionale ordini")
-with col_h2:
-    st.write("")
-    if st.button("🔒 Disconnetti"):
-        st.session_state.autenticato = False
-        st.rerun()
+st.title("Gestionale ordini")
+st.caption("Versione PC locale · dati salvati esclusivamente su questo computer")
 
 if "db_ordini" not in st.session_state:
     _t_perf = time.perf_counter()
     st.session_state.db_ordini = carica_db_cloud()
-    registra_tempo("Supabase · caricamento iniziale ordini", _t_perf)
+    registra_tempo("Locale · caricamento iniziale ordini locali", _t_perf)
 
 if "uploader_key" not in st.session_state:
     st.session_state.uploader_key = 0
@@ -207,27 +175,27 @@ if "select_all_prev_state" not in st.session_state:
 if "articoli_obsoleti_analisi_list" not in st.session_state:
     _t_perf = time.perf_counter()
     st.session_state.articoli_obsoleti_analisi_list = carica_articoli_obsoleti_analisi_cloud()
-    registra_tempo("Supabase · articoli obsoleti Analisi", _t_perf)
+    registra_tempo("Locale · articoli obsoleti Analisi", _t_perf)
 
 if "coppie_ignorate_list" not in st.session_state:
     _t_perf = time.perf_counter()
     st.session_state.coppie_ignorate_list = carica_coppie_ignorate_cloud()
-    registra_tempo("Supabase · coppie ignorate Fuzzy", _t_perf)
+    registra_tempo("Locale · coppie ignorate Fuzzy", _t_perf)
 
 if "clienti_ignorati_visite_list" not in st.session_state:
     _t_perf = time.perf_counter()
     st.session_state.clienti_ignorati_visite_list = carica_clienti_ignorati_visite_cloud()
-    registra_tempo("Supabase · clienti esclusi Visite", _t_perf)
+    registra_tempo("Locale · clienti esclusi Visite", _t_perf)
 
 if "articoli_ignorati_prev_list" not in st.session_state:
     _t_perf = time.perf_counter()
     st.session_state.articoli_ignorati_prev_list = carica_articoli_ignorati_prev_cloud()
-    registra_tempo("Supabase · esclusioni Previsionale", _t_perf)
+    registra_tempo("Locale · esclusioni Previsionale", _t_perf)
 
 if "mappa_custom_calendar" not in st.session_state:
     _t_perf = time.perf_counter()
     st.session_state.mappa_custom_calendar = carica_mappatura_calendar_cloud()
-    registra_tempo("Supabase · mappatura Calendar", _t_perf)
+    registra_tempo("Locale · mappatura Calendar", _t_perf)
 
 etichette_tabs = [
     "Database",
@@ -390,12 +358,12 @@ if not tabs_lazy_supportate or getattr(tab_database, "open", False):
 
         st.divider()
 
-        st.subheader("2. Tabella Ordini in Database Cloud")
+        st.subheader("2. Tabella Ordini in Database Locale")
         
-        if st.button("🔄 Ricarica Dati dal Cloud"):
+        if st.button("🔄 Ricarica dati locali"):
             _t_perf = time.perf_counter()
             st.session_state.db_ordini = carica_db_cloud()
-            registra_tempo("Supabase · ricarica manuale ordini", _t_perf)
+            registra_tempo("Locale · ricarica manuale ordini", _t_perf)
             st.rerun()
 
         df_attuale = st.session_state.db_ordini
